@@ -77,13 +77,22 @@ pub struct AudioSource {
     pub sample_rate: u32,
 }
 
+/// What the capture sends the analysis thread.
+pub enum Feed {
+    /// Listen to this from now on.
+    Listen(AudioSource),
+    /// Nothing will be heard for a while, so work nothing out until the next
+    /// [`Feed::Listen`].
+    Rest,
+}
+
 /// Spawns the analysis thread. Returns the features reader for the sill and a
-/// sender for (re)attaching audio sources. `on_kick` is called on that thread
+/// sender for (re)attaching audio sources, or for letting it rest. `on_kick` is called on that thread
 /// with when the samples that held each kick arrived, so the sill can draw it
 /// at once rather than at its next frame.
 pub fn spawn_analysis(
     on_kick: impl Fn(Instant) + Send + 'static,
-) -> (Output<AudioFeatures>, Sender<AudioSource>) {
+) -> (Output<AudioFeatures>, Sender<Feed>) {
     let (input, output) = TripleBuffer::new(&AudioFeatures::default()).split();
     let (tx, rx) = channel();
     thread::Builder::new()
@@ -94,7 +103,7 @@ pub fn spawn_analysis(
 }
 
 fn analysis_loop(
-    sources: Receiver<AudioSource>,
+    sources: Receiver<Feed>,
     mut out: Input<AudioFeatures>,
     on_kick: impl Fn(Instant),
 ) {
@@ -107,12 +116,20 @@ fn analysis_loop(
     let mut last_real = Instant::now();
     let mut silence_clock = Instant::now();
     let mut note = Note::new(&analyzer);
+    // While resting the thread sleeps on the channel rather than every few ms.
+    let mut resting = false;
 
     loop {
         // Latest source wins; a sample-rate change rebuilds the analyzer.
         loop {
-            match sources.try_recv() {
-                Ok(src) => {
+            let next = if resting {
+                sources.recv().map_err(|_| TryRecvError::Disconnected)
+            } else {
+                sources.try_recv()
+            };
+            match next {
+                Ok(Feed::Listen(src)) => {
+                    resting = false;
                     if src.sample_rate as f32 != analyzer.sample_rate {
                         analyzer = Analyzer::new(src.sample_rate);
                         note = Note::new(&analyzer);
@@ -122,6 +139,16 @@ fn analysis_loop(
                         sample_rate = src.sample_rate,
                         "listening to a new audio source"
                     );
+                }
+                // Starts again from silence, so nothing heard before is
+                // still ringing when it wakes.
+                Ok(Feed::Rest) => {
+                    resting = true;
+                    source = None;
+                    analyzer = Analyzer::new(analyzer.sample_rate as u32);
+                    note = Note::new(&analyzer);
+                    out.write(*analyzer.features());
+                    info!("resting until there is something to hear");
                 }
                 Err(TryRecvError::Empty) => break,
                 // The capture is gone, so the sill is closing.
