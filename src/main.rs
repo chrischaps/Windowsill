@@ -12,7 +12,8 @@
 //! `--day-in 60s` runs a whole day in a minute, to check how it looks.
 //! It listens to whatever the PC is playing, and while music plays, dust drifts
 //! in the light on the beat, the plant's leaves lean to the bass and the jar
-//! rings with light now and then on a kick.
+//! rings with light now and then on a kick. It draws at 15 fps, and at 30
+//! while music plays, with each kick drawn the moment it is heard.
 
 mod args;
 mod audio;
@@ -25,6 +26,7 @@ mod location;
 mod moon;
 mod night;
 mod objects;
+mod pace;
 mod palette;
 mod placement;
 mod presence;
@@ -55,6 +57,7 @@ use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
 use location::Whereabouts;
+use pace::{Lag, Pace};
 use palette::Blend;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use presence::Presence;
@@ -210,6 +213,8 @@ pub enum Wake {
     Located(location::Found),
     /// The machine woke from sleep.
     Woke,
+    /// The music kicked. The payload is when the analysis thread heard it.
+    Kick(Instant),
 }
 
 /// Saved files waiting to be read again once the writing stops.
@@ -267,6 +272,11 @@ struct App {
     sway: sway::Sway,
     /// How the jar is ringing.
     ring: ring::Ring,
+    /// Whether to draw at the idle rate or the music's.
+    pace: Pace,
+    /// When the kick waiting to be drawn was heard.
+    kick: Option<Instant>,
+    lag: Lag,
 }
 
 impl App {
@@ -304,7 +314,10 @@ impl App {
         }
         // Nothing is on show yet, so the sill starts in the light it should be in.
         let sill = Sill::at(sunlight(&config, here, SillState::default(), world));
-        let (music, sink) = audio::analysis::spawn_analysis();
+        let kicks = proxy.clone();
+        let (music, sink) = audio::analysis::spawn_analysis(move |heard| {
+            let _ = kicks.send_event(Wake::Kick(heard));
+        });
         Self {
             proxy,
             args,
@@ -332,6 +345,9 @@ impl App {
             drift: dust::Drift::default(),
             sway: sway::Sway::default(),
             ring: ring::Ring::default(),
+            pace: Pace::default(),
+            kick: None,
+            lag: Lag::default(),
         }
     }
 
@@ -493,15 +509,16 @@ impl App {
         Ok(())
     }
 
-    /// Time between frames while the room is quiet.
     /// How the sill is answering the music: how far the dust has drifted, how
     /// far the leaves lean, and how bright the jar's ring is.
     fn answers(&self) -> [f32; 3] {
         [self.drift.at(), self.sway.lean(), self.ring.light()]
     }
 
+    /// Time between frames: the idle rate, or the music's while it plays.
     fn frame(&self) -> Duration {
-        Duration::from_secs(1) / self.config.fps_idle
+        self.pace
+            .frame(Instant::now(), self.config.fps_idle, self.config.fps_music)
     }
 
     /// The shader to draw with: its source on disk if that is there, otherwise
@@ -625,6 +642,15 @@ impl ApplicationHandler<Wake> for App {
                 tracing::debug!("woke from sleep");
                 self.whereabouts.woke(SystemTime::now());
             }
+            // Drawn now rather than up to a frame later; the frame after it
+            // follows a whole frame on, so kicks never add to the frame rate
+            // by more than one each.
+            Wake::Kick(heard) => {
+                if let (Resting::On(_), Some(window)) = (self.resting, &self.window) {
+                    self.kick = Some(heard);
+                    window.request_redraw();
+                }
+            }
         }
     }
 
@@ -659,6 +685,7 @@ impl ApplicationHandler<Wake> for App {
                 self.sill.step(dt * self.clock.pace(), &self.config.ease);
                 // The music keeps real time, whatever the sky's clock is doing.
                 let heard = *self.music.read();
+                self.pace.hear(now, &heard);
                 self.sill.target.dust = dust::stir(heard.bass_att);
                 self.sill.hear(dt, &self.config.ease);
                 self.drift
@@ -676,6 +703,10 @@ impl ApplicationHandler<Wake> for App {
                         night::flicker(now.duration_since(self.born).as_secs_f64()),
                         answers,
                     );
+                }
+                if let Some(heard) = self.kick.take() {
+                    self.lag.drawn(heard, Instant::now());
+                    self.next_frame = now + self.frame();
                 }
             }
             _ => {}
@@ -697,8 +728,8 @@ impl ApplicationHandler<Wake> for App {
             self.pending = None;
             self.reload(pending);
         }
-        // While the sill shows, draw at the idle rate. While it is aside, wake
-        // only for events and the settling looks.
+        // While the sill shows, draw at the idle rate, or the music's while it
+        // plays. While it is aside, wake only for events and the settling looks.
         let mut wake = self.settle.next();
         if let Some(pending) = self.pending {
             wake = Some(wake.map_or(pending.at, |at| at.min(pending.at)));

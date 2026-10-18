@@ -78,18 +78,26 @@ pub struct AudioSource {
 }
 
 /// Spawns the analysis thread. Returns the features reader for the sill and a
-/// sender for (re)attaching audio sources.
-pub fn spawn_analysis() -> (Output<AudioFeatures>, Sender<AudioSource>) {
+/// sender for (re)attaching audio sources. `on_kick` is called on that thread
+/// with when the samples that held each kick arrived, so the sill can draw it
+/// at once rather than at its next frame.
+pub fn spawn_analysis(
+    on_kick: impl Fn(Instant) + Send + 'static,
+) -> (Output<AudioFeatures>, Sender<AudioSource>) {
     let (input, output) = TripleBuffer::new(&AudioFeatures::default()).split();
     let (tx, rx) = channel();
     thread::Builder::new()
         .name("windowsill-audio".into())
-        .spawn(move || analysis_loop(rx, input))
+        .spawn(move || analysis_loop(rx, input, on_kick))
         .expect("spawn audio thread");
     (output, tx)
 }
 
-fn analysis_loop(sources: Receiver<AudioSource>, mut out: Input<AudioFeatures>) {
+fn analysis_loop(
+    sources: Receiver<AudioSource>,
+    mut out: Input<AudioFeatures>,
+    on_kick: impl Fn(Instant),
+) {
     // Until a source arrives we run at a nominal rate on synthesized silence.
     let mut source: Option<ringbuf::HeapCons<f32>> = None;
     let mut analyzer = Analyzer::new(48_000);
@@ -127,6 +135,7 @@ fn analysis_loop(sources: Receiver<AudioSource>, mut out: Input<AudioFeatures>) 
         }
 
         let now = Instant::now();
+        let kicks = analyzer.kick.hits;
         let mut published = false;
         if !buf.is_empty() {
             published = analyzer.push(&buf);
@@ -147,6 +156,9 @@ fn analysis_loop(sources: Receiver<AudioSource>, mut out: Input<AudioFeatures>) 
 
         if published {
             out.write(*analyzer.features());
+            if analyzer.kick.hits != kicks {
+                on_kick(now);
+            }
         }
         if note.at.elapsed() >= NOTE_EVERY {
             note.write(&analyzer);
@@ -473,13 +485,16 @@ struct OnsetTiming {
     floor: f32,
 }
 
-/// Adaptive-threshold peak picker for one band's onset strength, with a
-/// decaying 0..1 envelope. Same scheme as the main beat detector, minus
-/// the tempo tracking.
+/// Adaptive-threshold onset picker for one band's onset strength, with a
+/// decaying 0..1 envelope. The threshold is the main beat detector's, but it
+/// fires as the strength rises past it rather than a hop after its peak, which
+/// hears a kick 6–16 ms after it lands instead of 22–28 ms. The refractory
+/// keeps the rest of the rise from counting again.
 struct OnsetDetector {
     hist: VecDeque<f32>,
     hist_len: usize,
-    prev: [f32; 2],
+    /// Last hop's onset strength.
+    prev: f32,
     since: f32,
     timing: OnsetTiming,
     env: f32,
@@ -492,7 +507,7 @@ impl OnsetDetector {
         Self {
             hist: VecDeque::with_capacity(hist_len + 1),
             hist_len,
-            prev: [0.0; 2],
+            prev: 0.0,
             since: f32::INFINITY,
             timing,
             env: 0.0,
@@ -509,20 +524,15 @@ impl OnsetDetector {
         let threshold =
             (mean + ONSET_K * var.sqrt() + self.timing.floor).max(peak * self.timing.rel);
 
-        let [prev2, prev1] = self.prev;
         self.since += dt;
         self.env *= (-dt / self.timing.tau).exp();
-        if prev1 > prev2
-            && prev1 >= onset
-            && prev1 > threshold
-            && self.since > self.timing.refractory
-        {
+        if onset > self.prev && onset > threshold && self.since > self.timing.refractory {
             self.since = 0.0;
             self.env = 1.0;
             self.hits += 1;
         }
 
-        self.prev = [prev1, onset];
+        self.prev = onset;
         self.hist.push_back(onset);
         if self.hist.len() > self.hist_len {
             self.hist.pop_front();
@@ -686,6 +696,28 @@ mod tests {
                 a.kick.hits
             );
         }
+    }
+
+    #[test]
+    fn hears_a_kick_soon_after_it_lands() {
+        // The window must take in enough of the kick before it shows. This is
+        // the analyzer's share of the sill's latency.
+        let period = 60.0 / 120.0;
+        let mut was = 0.0;
+        let mut late = Vec::new();
+        run(12.0, kick_track, |t, f| {
+            if f.kick > was {
+                late.push(t % period);
+            }
+            was = f.kick;
+        });
+        assert!(late.len() >= 21, "kicks {}", late.len());
+        let worst = late.iter().copied().fold(0.0f32, f32::max);
+        assert!(
+            worst < 0.020,
+            "a kick heard {:.1} ms after it landed",
+            worst * 1e3
+        );
     }
 
     #[test]
