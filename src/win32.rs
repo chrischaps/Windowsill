@@ -8,6 +8,9 @@
 //! winit call that might change the window's flags.
 
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::Shell::{
+    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
@@ -16,8 +19,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
+use crate::placement::{Edge, Rect, Taskbar};
+
 /// The extended styles the sill must always have.
-pub const GLASS_EX_STYLE: u32 = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+pub const GLASS_EX_STYLE: u32 =
+    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
 /// The window's HWND, or `None` if winit didn't give us a Win32 handle.
 pub fn hwnd(window: &Window) -> Option<HWND> {
@@ -30,7 +36,8 @@ pub fn hwnd(window: &Window) -> Option<HWND> {
 /// Adds the glass styles to the window: clicks fall through to whatever is
 /// underneath, it never takes focus, and it has no taskbar button or Alt+Tab entry.
 pub fn make_glass(window: &Window) -> anyhow::Result<()> {
-    let hwnd = hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
+    let hwnd =
+        hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
     // SAFETY: `hwnd` is a live window owned by this thread's winit event loop.
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
@@ -51,7 +58,10 @@ pub fn make_glass(window: &Window) -> anyhow::Result<()> {
         // A layered window stays invisible until it is given an alpha. Fully opaque
         // here; per-pixel transparency is the job of the renderer (#4).
         if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
-            anyhow::bail!("SetLayeredWindowAttributes failed: {}", std::io::Error::last_os_error());
+            anyhow::bail!(
+                "SetLayeredWindowAttributes failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
     }
     Ok(())
@@ -62,4 +72,34 @@ pub fn ex_style(window: &Window) -> Option<u32> {
     let hwnd = hwnd(window)?;
     // SAFETY: reading a style from a live window has no side effects.
     Some(unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32)
+}
+
+/// The taskbar's rectangle and edge from `SHAppBarMessage(ABM_GETTASKBARPOS)`,
+/// in physical pixels (winit makes the process per-monitor DPI aware), or `None`
+/// when the shell has no taskbar to report.
+pub fn taskbar() -> Option<Taskbar> {
+    // SAFETY: APPBARDATA is plain data, and all-zero is a valid starting value.
+    let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
+    data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+    // SAFETY: `data` is a correctly sized APPBARDATA that outlives the call.
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } == 0 {
+        return None;
+    }
+    let edge = match data.uEdge {
+        ABE_LEFT => Edge::Left,
+        ABE_TOP => Edge::Top,
+        ABE_RIGHT => Edge::Right,
+        ABE_BOTTOM => Edge::Bottom,
+        _ => return None,
+    };
+    let rc = data.rc;
+    Some(Taskbar {
+        rect: Rect {
+            left: rc.left,
+            top: rc.top,
+            right: rc.right,
+            bottom: rc.bottom,
+        },
+        edge,
+    })
 }
