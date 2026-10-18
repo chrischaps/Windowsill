@@ -27,7 +27,7 @@ impl Rect {
         self.bottom - self.top
     }
 
-    fn contains_point(&self, x: i32, y: i32) -> bool {
+    pub fn contains_point(&self, x: i32, y: i32) -> bool {
         (self.left..self.right).contains(&x) && (self.top..self.bottom).contains(&y)
     }
 }
