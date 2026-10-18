@@ -1,5 +1,6 @@
 //! The command line, which is only for checking how the sill looks: a whole
-//! day sped up, a moment held still, or the sky of somewhere else.
+//! day sped up, a moment held still, or the sky of somewhere else; and for
+//! checking how much it costs to draw.
 
 use std::time::Duration;
 
@@ -7,10 +8,14 @@ use anyhow::{Context, anyhow, bail};
 
 pub const USAGE: &str = "\
 usage: windowsill [--day-in <span>] [--at <hh:mm>] [--lat <degrees> --lon <degrees>]
+       windowsill --bench <frames> [--budget <ms>]
 
   --day-in 60s   run a whole day in the given span (s, m or h; plain seconds)
   --at 06:30     start the day at this local time, or hold it there without --day-in
-  --lat, --lon   look at the sky from here instead of windowsill.toml's place";
+  --lat, --lon   look at the sky from here instead of windowsill.toml's place
+  --bench 600    draw this many frames offscreen, idle and with music, and say
+                 how much CPU each took
+  --budget 2.5   with --bench, fail if a frame took more than this many ms";
 
 /// What the command line asked for. Everything is optional; nothing means the
 /// real clock and the config's place.
@@ -20,6 +25,8 @@ pub struct Args {
     pub at: Option<(u32, u32)>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    pub bench: Option<u32>,
+    pub budget: Option<Duration>,
     pub help: bool,
 }
 
@@ -46,11 +53,16 @@ impl Args {
                 "--at" => parsed.at = Some(clock_time(&value)?),
                 "--lat" => parsed.latitude = Some(degrees(&value, 90.0, "--lat")?),
                 "--lon" => parsed.longitude = Some(degrees(&value, 180.0, "--lon")?),
+                "--bench" => parsed.bench = Some(frames(&value)?),
+                "--budget" => parsed.budget = Some(millis(&value)?),
                 _ => bail!("unknown option {flag}"),
             }
         }
         if parsed.latitude.is_some() != parsed.longitude.is_some() {
             bail!("--lat and --lon go together");
+        }
+        if parsed.budget.is_some() && parsed.bench.is_none() {
+            bail!("--budget goes with --bench");
         }
         Ok(parsed)
     }
@@ -82,6 +94,25 @@ fn clock_time(text: &str) -> anyhow::Result<(u32, u32)> {
         .and_then(|(h, m)| Some((h.parse().ok()?, m.parse().ok()?)))
         .filter(|&(h, m): &(u32, u32)| h < 24 && m < 60)
         .with_context(|| format!("--at {text} is not a time like 06:30"))
+}
+
+/// A count of frames to draw, at least one.
+fn frames(text: &str) -> anyhow::Result<u32> {
+    text.parse()
+        .ok()
+        .filter(|&n: &u32| n > 0)
+        .with_context(|| format!("--bench {text} is not a number of frames"))
+}
+
+/// A time like `2.5` or `2.5ms`, in milliseconds.
+fn millis(text: &str) -> anyhow::Result<Duration> {
+    text.strip_suffix("ms")
+        .unwrap_or(text)
+        .parse::<f64>()
+        .ok()
+        .filter(|ms| ms.is_finite() && *ms > 0.0)
+        .map(|ms| Duration::from_secs_f64(ms / 1000.0))
+        .with_context(|| format!("--budget {text} is not a time in ms like 2.5"))
 }
 
 /// Degrees within `±limit`.
@@ -151,6 +182,22 @@ mod tests {
             "--lat 10",
             "--lon 10",
             "--fast",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_bench_and_its_budget() {
+        let args = parse("--bench 600 --budget 2.5ms").unwrap();
+        assert_eq!(args.bench, Some(600));
+        assert_eq!(args.budget, Some(Duration::from_micros(2500)));
+        assert_eq!(parse("--bench=600 --budget 2.5").unwrap(), args);
+        for bad in [
+            "--bench 0",
+            "--bench lots",
+            "--bench 9 --budget 0",
+            "--budget 2",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

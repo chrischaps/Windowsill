@@ -73,9 +73,16 @@ impl Path {
 
 pub struct Glass {
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    painter: Painter,
+}
+
+/// Everything that draws the sill, apart from where it is drawn to, so the
+/// bench can draw exactly what the window does into a texture of its own.
+pub struct Painter {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    format: wgpu::TextureFormat,
     layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
@@ -182,6 +189,77 @@ impl Glass {
         };
         surface.configure(&device, &config);
 
+        let painter = Painter::new(device, queue, format, shader)?;
+        Ok(Self {
+            surface,
+            config,
+            painter,
+        })
+    }
+
+    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        if (self.config.width, self.config.height) != (size.width, size.height) {
+            self.config.width = size.width;
+            self.config.height = size.height;
+            self.surface.configure(&self.painter.device, &self.config);
+        }
+    }
+
+    /// Swaps in a new shader. If it doesn't build, the old one stays and the
+    /// error says why.
+    pub fn reload(&mut self, shader: &str) -> anyhow::Result<()> {
+        self.painter.reload(shader)
+    }
+
+    /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
+    /// of the sill is there, from 0 to 1, `look` its colours and where things
+    /// stand on it, `sill` the light it is in, `flicker` how the candle's
+    /// flame breathes, and `music` how the sill answers the music: how far the
+    /// dust has come through its cycle, how many degrees the plant's leaves
+    /// lean, and how bright the jar's ring is.
+    pub fn draw(
+        &mut self,
+        scale: f64,
+        presence: f32,
+        look: &Look,
+        sill: &SillState,
+        flicker: [f32; 2],
+        music: [f32; 3],
+    ) {
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.painter.device, &self.config);
+                return;
+            }
+            // Hidden or covered: there is nothing to show, so skip the frame.
+            other => {
+                tracing::trace!("skipping a frame: {other:?}");
+                return;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let size = [self.config.width, self.config.height];
+        self.painter
+            .paint(&view, size, scale, presence, look, sill, flicker, music);
+        self.painter.queue.present(frame);
+    }
+}
+
+impl Painter {
+    /// Builds the pipeline for drawing into `format` with the WGSL in `shader`.
+    fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        shader: &str,
+    ) -> anyhow::Result<Self> {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sill"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -221,10 +299,9 @@ impl Glass {
         });
 
         Ok(Self {
-            surface,
             device,
             queue,
-            config,
+            format,
             layout,
             pipeline,
             uniforms,
@@ -232,32 +309,52 @@ impl Glass {
         })
     }
 
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        if (self.config.width, self.config.height) != (size.width, size.height) {
-            self.config.width = size.width;
-            self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
+    /// A painter with no window, for the bench: on the GPU the sill would
+    /// choose, or on Windows' software renderer where there is none, as on CI.
+    pub fn headless(
+        path: Path,
+        format: wgpu::TextureFormat,
+        shader: &str,
+    ) -> anyhow::Result<(Self, wgpu::AdapterInfo)> {
+        let instance = path.instance();
+        let options = |fallback| wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: fallback,
+            apply_limit_buckets: false,
+        };
+        let adapter = pollster::block_on(instance.request_adapter(&options(false)))
+            .or_else(|_| pollster::block_on(instance.request_adapter(&options(true))))
+            .with_context(|| format!("no GPU adapter for the {path:?} path"))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("windowsill bench"),
+            ..Default::default()
+        }))
+        .context("could not open the GPU device")?;
+        let painter = Self::new(device, queue, format, shader)?;
+        Ok((painter, adapter.get_info()))
+    }
+
+    /// Waits for the GPU to finish everything submitted so far.
+    pub fn wait(&self) {
+        if let Err(err) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
+            tracing::warn!("could not wait for the GPU: {err}");
         }
     }
 
-    /// Swaps in a new shader. If it doesn't build, the old one stays and the
-    /// error says why.
+    /// Swaps in a new shader, keeping the old one if it doesn't build.
     pub fn reload(&mut self, shader: &str) -> anyhow::Result<()> {
-        self.pipeline = build_pipeline(&self.device, &self.layout, self.config.format, shader)?;
+        self.pipeline = build_pipeline(&self.device, &self.layout, self.format, shader)?;
         Ok(())
     }
 
-    /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
-    /// of the sill is there, from 0 to 1, `look` its colours and where things
-    /// stand on it, `sill` the light it is in, `flicker` how the candle's
-    /// flame breathes, and `music` how the sill answers the music: how far the
-    /// dust has come through its cycle, how many degrees the plant's leaves
-    /// lean, and how bright the jar's ring is.
-    pub fn draw(
-        &mut self,
+    /// Draws one frame into `view`, which is `size` physical pixels, and
+    /// submits it. The arguments are [`Glass::draw`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        &self,
+        view: &wgpu::TextureView,
+        size: [u32; 2],
         scale: f64,
         presence: f32,
         look: &Look,
@@ -265,22 +362,9 @@ impl Glass {
         flicker: [f32; 2],
         music: [f32; 3],
     ) {
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            // Hidden or covered: there is nothing to show, so skip the frame.
-            other => {
-                tracing::trace!("skipping a frame: {other:?}");
-                return;
-            }
-        };
         let palette = &look.palette;
         let uniforms = Uniforms {
-            height: self.config.height as f32,
+            height: size[1] as f32,
             scale: scale as f32,
             presence,
             glow_alpha: palette.glow_alpha,
@@ -304,12 +388,7 @@ impl Glass {
             ],
             candle: [sill.candle, sill.wax, flicker[0], flicker[1]],
             music: [sill.dust, music[0], music[1], music[2]],
-            places: [
-                look.plant.at,
-                look.jar.at,
-                look.candle.at,
-                self.config.width as f32,
-            ],
+            places: [look.plant.at, look.jar.at, look.candle.at, size[0] as f32],
             pot: look.plant.pot.padded(),
             leaf: look.plant.leaf.padded(),
             glass: look.jar.glass.padded(),
@@ -319,9 +398,6 @@ impl Glass {
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -331,7 +407,7 @@ impl Glass {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("glass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -346,7 +422,6 @@ impl Glass {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        self.queue.present(frame);
     }
 }
 

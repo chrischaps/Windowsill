@@ -1,4 +1,4 @@
-# Lints and tests Windowsill on Windows on every push to main and every PR.
+# Lints, tests and benches Windowsill on Windows on every push to main and every PR.
 name: Build
 
 on:
@@ -18,3 +18,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --release -- -D warnings
       - run: cargo test --release
+      # The runner has no GPU, so this draws on Windows' software renderer and
+      # the shader's cost lands on the CPU. The budget is about twice what the
+      # runner takes, so only a large regression fails it.
+      - run: cargo run --release -- --bench 300

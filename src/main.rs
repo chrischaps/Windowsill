@@ -19,9 +19,11 @@
 //! locked it does nothing at all: no drawing, no listening, no looking.
 //! Rest the pointer on the candle for a second and a tiny menu opens; it is
 //! the only thing the sill ever answers.
+//! `--bench 600` draws frames offscreen and says what each one cost.
 
 mod args;
 mod audio;
+mod bench;
 mod clock;
 mod config;
 mod dust;
@@ -956,6 +958,9 @@ fn main() -> anyhow::Result<()> {
     if args.help {
         println!("{}", args::USAGE);
         return Ok(());
+    }
+    if let Some(frames) = args.bench {
+        return bench::run(frames, args.budget);
     }
 
     tracing::info!("Windowsill {}", env!("CARGO_PKG_VERSION"));

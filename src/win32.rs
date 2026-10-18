@@ -11,10 +11,11 @@
 //! shape, that the machine has woken from sleep, or that the screen has been
 //! locked, so [`watch_layout`] subclasses the window to hear them.
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 use windows_sys::Win32::System::Time::{
     GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
 };
@@ -187,6 +188,26 @@ pub fn utc_offset() -> Option<i64> {
             zone.StandardBias
         };
     Some(-i64::from(bias) * 60)
+}
+
+/// How much CPU time the whole process has used so far, on every thread and in
+/// the kernel as well as in user mode, or `None` if Windows won't say.
+pub fn cpu_time() -> Option<std::time::Duration> {
+    let mut times = [FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    }; 4];
+    let [created, exited, kernel, user] = &mut times;
+    // SAFETY: the pseudo-handle needs no closing, and each FILETIME outlives the call.
+    let ok = unsafe { GetProcessTimes(GetCurrentProcess(), created, exited, kernel, user) };
+    if ok == 0 {
+        return None;
+    }
+    // In units of 100 ns.
+    let ticks = |t: &FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    Some(std::time::Duration::from_nanos(
+        (ticks(kernel) + ticks(user)) * 100,
+    ))
 }
 
 /// Our id among the window's subclasses. Any value works if it's ours alone.
