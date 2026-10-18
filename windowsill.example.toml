@@ -19,3 +19,9 @@ wood_shade = "#54331f"   # the face toward its bottom edge
 lip        = "#946642"   # the thin top edge that catches the light
 glow       = "#805738"   # the warmth on the glass just above the ledge
 glow_alpha = 0.42        # how strong that warmth starts, 0 to 1
+
+[ease]
+# How slowly the sill follows a change, in seconds: the time to cover about two
+# thirds of it. Nothing may be quicker than 2.
+light  = 4.0   # the beam, its colour, the shadows and the moonlight
+candle = 3.0   # the candle catching and going out

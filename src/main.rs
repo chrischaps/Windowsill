@@ -14,6 +14,7 @@ mod palette;
 mod placement;
 mod presence;
 mod settle;
+mod sill;
 mod sun;
 #[cfg(windows)]
 mod win32;
@@ -34,6 +35,7 @@ use palette::Blend;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use presence::Presence;
 use settle::Settle;
+use sill::Sill;
 
 #[cfg(windows)]
 use win32::taskbar;
@@ -126,6 +128,9 @@ struct App {
     resting: Resting,
     settle: Settle,
     presence: Presence,
+    sill: Sill,
+    /// When the sill was last eased, so each frame eases by the time it took.
+    eased: Instant,
     next_frame: Instant,
 }
 
@@ -150,6 +155,8 @@ impl App {
             resting: Resting::Unknown,
             settle: Settle::default(),
             presence: Presence::default(),
+            sill: Sill::default(),
+            eased: Instant::now(),
             next_frame: Instant::now(),
         }
     }
@@ -229,7 +236,12 @@ impl App {
                     // The swapchain still holds the last frame from before it
                     // stepped aside; clear it so the sill eases in from nothing.
                     if let Some(glass) = &mut self.glass {
-                        glass.draw(window.scale_factor(), 0.0, &self.palette.at(Instant::now()));
+                        glass.draw(
+                            window.scale_factor(),
+                            0.0,
+                            &self.palette.at(Instant::now()),
+                            &self.sill.shown(),
+                        );
                     }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
                     window.set_visible(true);
@@ -397,12 +409,18 @@ impl ApplicationHandler<Wake> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                self.sill.step(
+                    now.duration_since(self.eased).as_secs_f32(),
+                    &self.config.ease,
+                );
+                self.eased = now;
                 if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
-                    let now = Instant::now();
                     glass.draw(
                         window.scale_factor(),
                         self.presence.at(now),
                         &self.palette.at(now),
+                        &self.sill.shown(),
                     );
                 }
             }

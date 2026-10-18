@@ -16,6 +16,11 @@ struct Sill {
     wood_shade: vec4<f32>,
     lip_light: vec4<f32>,
     glow: vec4<f32>,
+    // The eased sill state, not drawn yet: beam angle in degrees, colour
+    // temperature in kelvin, shadow side from -1 to 1, and moonlight from 0 to 1.
+    light: vec4<f32>,
+    // The candle's flame in .x, from 0 to 1.
+    candle: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> sill: Sill;

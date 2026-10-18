@@ -18,6 +18,7 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::palette::Palette;
+use crate::sill::SillState;
 
 /// The shader the sill was built with, for when its source isn't on disk.
 pub const SHADER: &str = include_str!("glass.wgsl");
@@ -93,6 +94,10 @@ struct Uniforms {
     wood_shade: [f32; 4],
     lip: [f32; 4],
     glow: [f32; 4],
+    /// Beam angle, colour temperature, shadow side and moonlight.
+    light: [f32; 4],
+    /// The candle's flame in `.x`.
+    candle: [f32; 4],
 }
 
 impl Glass {
@@ -228,8 +233,9 @@ impl Glass {
     }
 
     /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
-    /// of the sill is there, from 0 to 1, and `palette` the colours to draw it in.
-    pub fn draw(&mut self, scale: f64, presence: f32, palette: &Palette) {
+    /// of the sill is there, from 0 to 1, `palette` the colours to draw it in,
+    /// and `sill` the light it is in.
+    pub fn draw(&mut self, scale: f64, presence: f32, palette: &Palette, sill: &SillState) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -252,6 +258,13 @@ impl Glass {
             wood_shade: palette.wood_shade.padded(),
             lip: palette.lip.padded(),
             glow: palette.glow.padded(),
+            light: [
+                sill.beam_angle,
+                sill.colour_temperature,
+                sill.shadow_side,
+                sill.moonlight,
+            ],
+            candle: [sill.candle, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
