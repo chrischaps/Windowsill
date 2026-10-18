@@ -15,6 +15,10 @@ cargo test
 
 Windows 10/11 only for now. It is built on Rust, winit, wgpu and (from M3) cpal, the same stack as [Seoul](https://github.com/chrischaps/Seoul).
 
+## Settings
+
+Copy [windowsill.example.toml](windowsill.example.toml) to `windowsill.toml` next to the exe, or to `%APPDATA%\Windowsill`, to set your location, frame rate and the ledge's colours. The sill re-reads it on every save. While the source is on disk, it also reloads `src/glass.wgsl` on save, so the ledge can be tuned while it runs.
+
 ## Privacy
 
 From M3, Windowsill listens to the audio your PC plays, through WASAPI loopback. The analysis stays in memory: nothing is recorded, saved or sent anywhere.

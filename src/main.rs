@@ -6,14 +6,18 @@
 //! changes. Clicks fall through it, it never takes focus, and it stays out of
 //! the taskbar and Alt+Tab. For now it draws a flat wooden ledge that fades
 //! upward into clear glass, and eases in over a few seconds when it comes to rest.
+//! Its colours and frame rate come from `windowsill.toml`, re-read on every save.
 
+mod config;
 mod glass;
+mod palette;
 mod placement;
 mod presence;
 mod settle;
 #[cfg(windows)]
 mod win32;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +27,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
+use config::{Config, Edited};
 use glass::Glass;
+use palette::Blend;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use presence::Presence;
 use settle::Settle;
@@ -37,12 +43,25 @@ fn taskbar() -> Option<placement::Taskbar> {
     None
 }
 
-/// The idle frame rate. Nothing on the sill ever needs more.
-const FRAME: Duration = Duration::from_nanos(1_000_000_000 / 15);
+/// How long to wait after a save for the editor to finish writing the file.
+const QUIET: Duration = Duration::from_millis(150);
 
-/// The desktop may have changed shape. The payload says what was heard.
+/// Why the event loop was woken from outside.
 #[derive(Clone, Copy, Debug)]
-pub struct LayoutChanged(pub &'static str);
+pub enum Wake {
+    /// The desktop may have changed shape. The payload says what was heard.
+    Layout(&'static str),
+    /// A file the sill reads was saved.
+    Edited(Edited),
+}
+
+/// Saved files waiting to be read again once the writing stops.
+#[derive(Clone, Copy)]
+struct Pending {
+    at: Instant,
+    config: bool,
+    shader: bool,
+}
 
 /// What the sill is doing, so a change is logged once rather than on every look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +73,12 @@ enum Resting {
 
 struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
-    proxy: EventLoopProxy<LayoutChanged>,
+    proxy: EventLoopProxy<Wake>,
+    config_path: PathBuf,
+    shader_path: Option<PathBuf>,
+    config: Config,
+    palette: Blend,
+    pending: Option<Pending>,
     window: Option<Arc<Window>>,
     glass: Option<Glass>,
     resting: Resting,
@@ -64,9 +88,20 @@ struct App {
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<LayoutChanged>) -> Self {
+    fn new(proxy: EventLoopProxy<Wake>) -> Self {
+        let config_path = config::locate();
+        tracing::info!("config: {}", config_path.display());
+        let config = Config::load(&config_path).unwrap_or_else(|err| {
+            tracing::error!("{err:#}; using the defaults until it is fixed");
+            Config::default()
+        });
         Self {
             proxy,
+            shader_path: config::shader_source(),
+            palette: Blend::new(config.palette),
+            config,
+            config_path,
+            pending: None,
             window: None,
             glass: None,
             resting: Resting::Unknown,
@@ -151,7 +186,7 @@ impl App {
                     // The swapchain still holds the last frame from before it
                     // stepped aside; clear it so the sill eases in from nothing.
                     if let Some(glass) = &mut self.glass {
-                        glass.draw(window.scale_factor(), 0.0);
+                        glass.draw(window.scale_factor(), 0.0, &self.palette.at(Instant::now()));
                     }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
                     window.set_visible(true);
@@ -195,6 +230,51 @@ impl App {
         Ok(())
     }
 
+    /// Time between frames while the room is quiet.
+    fn frame(&self) -> Duration {
+        Duration::from_secs(1) / self.config.fps_idle
+    }
+
+    /// The shader to draw with: its source on disk if that is there, otherwise
+    /// the one built in.
+    fn shader(&self) -> String {
+        self.shader_path
+            .as_ref()
+            .and_then(|path| {
+                std::fs::read_to_string(path)
+                    .inspect_err(|err| tracing::warn!("could not read {}: {err}", path.display()))
+                    .ok()
+            })
+            .unwrap_or_else(|| glass::SHADER.to_owned())
+    }
+
+    /// Reads again whatever was saved, keeping the last good version of anything
+    /// that no longer makes sense.
+    fn reload(&mut self, pending: Pending) {
+        if pending.config {
+            match Config::load(&self.config_path) {
+                Ok(config) if config == self.config => {}
+                Ok(config) => {
+                    tracing::info!("config reloaded");
+                    self.palette.toward(config.palette, Instant::now());
+                    self.config = config;
+                }
+                Err(err) => tracing::error!("{err:#}; keeping the last good config"),
+            }
+        }
+        if pending.shader {
+            let shader = self.shader();
+            if let Some(glass) = &mut self.glass {
+                match glass.reload(&shader) {
+                    Ok(()) => tracing::info!("shader reloaded"),
+                    Err(err) => {
+                        tracing::error!("the shader would not build; keeping the last one: {err:#}")
+                    }
+                }
+            }
+        }
+    }
+
     /// Looks again, and quits if the window can no longer be looked after.
     fn look(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(err) = self.rest(event_loop) {
@@ -204,7 +284,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<LayoutChanged> for App {
+impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -212,7 +292,13 @@ impl ApplicationHandler<LayoutChanged> for App {
         let path = glass::Path::from_env();
         let opened = self.open_sill(event_loop, path).and_then(|window| {
             let window = Arc::new(window);
-            let glass = Glass::new(window.clone(), path)?;
+            let glass = match Glass::new(window.clone(), path, &self.shader()) {
+                Err(err) if self.shader_path.is_some() => {
+                    tracing::error!("{err:#}; drawing with the built-in shader");
+                    Glass::new(window.clone(), path, glass::SHADER)
+                }
+                built => built,
+            }?;
             Ok((window, glass))
         });
         match opened {
@@ -229,10 +315,30 @@ impl ApplicationHandler<LayoutChanged> for App {
         self.look(event_loop);
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, LayoutChanged(what): LayoutChanged) {
-        tracing::debug!("{what}: looking at the taskbar again");
-        self.settle.poke(Instant::now());
-        self.look(event_loop);
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, wake: Wake) {
+        match wake {
+            Wake::Layout(what) => {
+                tracing::debug!("{what}: looking at the taskbar again");
+                self.settle.poke(Instant::now());
+                self.look(event_loop);
+            }
+            Wake::Edited(edited) => {
+                tracing::debug!("{edited:?} saved");
+                // Each save pushes the read back, so a burst of writes is read once.
+                let at = Instant::now() + QUIET;
+                let mut pending = self.pending.unwrap_or(Pending {
+                    at,
+                    config: false,
+                    shader: false,
+                });
+                pending.at = at;
+                match edited {
+                    Edited::Config => pending.config = true,
+                    Edited::Shader => pending.shader = true,
+                }
+                self.pending = Some(pending);
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -246,7 +352,12 @@ impl ApplicationHandler<LayoutChanged> for App {
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
-                    glass.draw(window.scale_factor(), self.presence.at(Instant::now()));
+                    let now = Instant::now();
+                    glass.draw(
+                        window.scale_factor(),
+                        self.presence.at(now),
+                        &self.palette.at(now),
+                    );
                 }
             }
             _ => {}
@@ -257,15 +368,24 @@ impl ApplicationHandler<LayoutChanged> for App {
         if self.settle.due(Instant::now()) {
             self.look(event_loop);
         }
+        if let Some(pending) = self.pending
+            && Instant::now() >= pending.at
+        {
+            self.pending = None;
+            self.reload(pending);
+        }
         // While the sill shows, draw at the idle rate. While it is aside, wake
         // only for events and the settling looks.
         let mut wake = self.settle.next();
+        if let Some(pending) = self.pending {
+            wake = Some(wake.map_or(pending.at, |at| at.min(pending.at)));
+        }
         if let (Resting::On(_), Some(window)) = (self.resting, &self.window) {
             let now = Instant::now();
             if now >= self.next_frame {
                 window.request_redraw();
                 // Never try to catch up on missed frames; just keep the pace.
-                self.next_frame = (self.next_frame + FRAME).max(now);
+                self.next_frame = (self.next_frame + self.frame()).max(now);
             }
             wake = Some(wake.map_or(self.next_frame, |at| at.min(self.next_frame)));
         }
@@ -286,9 +406,17 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("Windowsill {}", env!("CARGO_PKG_VERSION"));
 
-    let event_loop = EventLoop::<LayoutChanged>::with_user_event().build()?;
+    let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(event_loop.create_proxy());
+    // Without it the sill still runs; it just won't notice edits.
+    let _watch = config::Watch::new(
+        &app.config_path,
+        app.shader_path.as_deref(),
+        app.proxy.clone(),
+    )
+    .inspect_err(|err| tracing::warn!("not watching for edits: {err:#}"))
+    .ok();
     event_loop.run_app(&mut app)?;
     Ok(())
 }
