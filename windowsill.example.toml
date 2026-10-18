@@ -103,3 +103,4 @@ vivid     = 0.65
 # thirds of it. Nothing may be quicker than 2.
 light  = 4.0   # the beam, its colour, the shadows, the moonlight and the sky
 candle = 3.0   # the candle catching and going out
+wax    = 60.0  # the candle burning down, and fresh again by morning

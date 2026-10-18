@@ -11,6 +11,8 @@
 mod config;
 mod glass;
 mod light;
+mod moon;
+mod night;
 mod objects;
 mod palette;
 mod placement;
@@ -56,32 +58,24 @@ const QUIET: Duration = Duration::from_millis(150);
 /// and the ease smooths each step, so this is plenty.
 const SUN_EVERY: Duration = Duration::from_secs(20);
 
-/// Where the light on the sill should be heading now, keeping whatever the
-/// sun doesn't decide from `state`. With no place set it is plain daylight.
+/// Where the light on the sill should be heading now: the sun's, the moon's
+/// and the candle's. With no place set it is plain daylight, and the candle
+/// waits unlit.
 fn sunlight(config: &Config, state: SillState) -> SillState {
     match config.place().zip(config.room()) {
         Some((place, room)) => {
-            let sun = sun::position(place, SystemTime::now());
+            let now = SystemTime::now();
+            let sun = sun::position(place, now);
+            let moon = moon::position(place, now);
             let shade = config.sky.at(sun);
-            SillState {
+            let state = SillState {
                 ambient: shade.ambient.0,
                 vivid: shade.vivid,
                 ..light::in_sunlight(state, room, sun)
-            }
+            };
+            night::by_night(state, room, sun, moon, night::candle(place, now))
         }
-        None => {
-            let plain = SillState::default();
-            SillState {
-                beam_angle: plain.beam_angle,
-                colour_temperature: plain.colour_temperature,
-                shadow_side: plain.shadow_side,
-                sunshine: plain.sunshine,
-                window_side: plain.window_side,
-                ambient: plain.ambient,
-                vivid: plain.vivid,
-                ..state
-            }
-        }
+        None => SillState::default(),
     }
 }
 
@@ -108,6 +102,13 @@ fn note_the_sun(config: &Config) {
         "the sun is {:.1}° up at {:.0}°; {day}",
         sun.elevation,
         sun.azimuth
+    );
+    let moon = moon::position(place, now);
+    tracing::info!(
+        "the moon is {:.1}° up at {:.0}°, {:.0}% lit",
+        moon.elevation,
+        moon.azimuth,
+        moon.lit * 100.0
     );
 }
 
@@ -169,6 +170,8 @@ struct App {
     eased: Instant,
     /// When the sun was last looked at.
     sun_seen: Instant,
+    /// When the sill began, for the candle's flicker.
+    born: Instant,
     next_frame: Instant,
 }
 
@@ -198,6 +201,7 @@ impl App {
             sill,
             eased: Instant::now(),
             sun_seen: Instant::now(),
+            born: Instant::now(),
             next_frame: Instant::now(),
         }
     }
@@ -282,6 +286,7 @@ impl App {
                             0.0,
                             &self.appearance.at(Instant::now()),
                             &self.sill.shown(),
+                            [0.0; 2],
                         );
                     }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
@@ -467,6 +472,7 @@ impl ApplicationHandler<Wake> for App {
                         self.presence.at(now),
                         &self.appearance.at(now),
                         &self.sill.shown(),
+                        night::flicker(now.duration_since(self.born).as_secs_f64()),
                     );
                 }
             }

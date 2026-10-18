@@ -97,11 +97,12 @@ struct Uniforms {
     grain: [f32; 4],
     /// Beam angle, colour temperature, shadow side and moonlight.
     light: [f32; 4],
-    /// How much sun the window lets in, and which side its light comes from.
+    /// How much sun the window lets in, which side its light comes from, and
+    /// which way the moon's shadows fall.
     room: [f32; 4],
     /// The colour of the room's light, and in `.w` how vivid things are in it.
     sky: [f32; 4],
-    /// The candle's flame in `.x`.
+    /// The candle's flame, how much of it is left, and its flicker.
     candle: [f32; 4],
     /// Where the plant, jar and candle stand, from 0 to 1 across, and the
     /// strip's width in physical pixels.
@@ -248,8 +249,16 @@ impl Glass {
 
     /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
     /// of the sill is there, from 0 to 1, `look` its colours and where things
-    /// stand on it, and `sill` the light it is in.
-    pub fn draw(&mut self, scale: f64, presence: f32, look: &Look, sill: &SillState) {
+    /// stand on it, `sill` the light it is in, and `flicker` how the candle's
+    /// flame breathes.
+    pub fn draw(
+        &mut self,
+        scale: f64,
+        presence: f32,
+        look: &Look,
+        sill: &SillState,
+        flicker: [f32; 2],
+    ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -280,14 +289,14 @@ impl Glass {
                 sill.shadow_side,
                 sill.moonlight,
             ],
-            room: [sill.sunshine, sill.window_side, 0.0, 0.0],
+            room: [sill.sunshine, sill.window_side, sill.moon_side, 0.0],
             sky: [
                 sill.ambient[0],
                 sill.ambient[1],
                 sill.ambient[2],
                 sill.vivid,
             ],
-            candle: [sill.candle, 0.0, 0.0, 0.0],
+            candle: [sill.candle, sill.wax, flicker[0], flicker[1]],
             places: [
                 look.plant.at,
                 look.jar.at,

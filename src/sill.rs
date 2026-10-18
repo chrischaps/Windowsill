@@ -26,8 +26,12 @@ pub struct SillState {
     pub shadow_side: f32,
     /// The candle's flame, from 0 (unlit) to 1.
     pub candle: f32,
+    /// How much of the candle is left, from `night::STUB` to 1 (fresh).
+    pub wax: f32,
     /// How much of the light is the moon's, from 0 to 1.
     pub moonlight: f32,
+    /// Which way the moon's shadows fall: -1 to the left, 1 to the right.
+    pub moon_side: f32,
     /// How much of the sun the window lets in, from 0 (only the sky's light)
     /// to 1.
     pub sunshine: f32,
@@ -47,7 +51,9 @@ impl Default for SillState {
             colour_temperature: 5500.0,
             shadow_side: 0.0,
             candle: 0.0,
+            wax: 1.0,
             moonlight: 0.0,
+            moon_side: 0.0,
             sunshine: 1.0,
             window_side: 0.0,
             ambient: [1.0; 3],
@@ -66,6 +72,8 @@ pub struct Ease {
     pub light: f32,
     /// The candle catching and going out.
     pub candle: f32,
+    /// The candle burning down, and being fresh again in the morning.
+    pub wax: f32,
 }
 
 impl Default for Ease {
@@ -73,14 +81,19 @@ impl Default for Ease {
         Self {
             light: 4.0,
             candle: 3.0,
+            wax: 60.0,
         }
     }
 }
 
 impl Ease {
     /// Each time constant with its name, for checking the config.
-    pub fn each(&self) -> [(&'static str, f32); 2] {
-        [("light", self.light), ("candle", self.candle)]
+    pub fn each(&self) -> [(&'static str, f32); 3] {
+        [
+            ("light", self.light),
+            ("candle", self.candle),
+            ("wax", self.wax),
+        ]
     }
 }
 
@@ -115,6 +128,7 @@ impl Sill {
             (&mut s.colour_temperature, t.colour_temperature, ease.light),
             (&mut s.shadow_side, t.shadow_side, ease.light),
             (&mut s.moonlight, t.moonlight, ease.light),
+            (&mut s.moon_side, t.moon_side, ease.light),
             (&mut s.sunshine, t.sunshine, ease.light),
             (&mut s.window_side, t.window_side, ease.light),
             (r, t.ambient[0], ease.light),
@@ -122,6 +136,7 @@ impl Sill {
             (b, t.ambient[2], ease.light),
             (&mut s.vivid, t.vivid, ease.light),
             (&mut s.candle, t.candle, ease.candle),
+            (&mut s.wax, t.wax, ease.wax),
         ] {
             // What is left of the gap, so a finished ease lands on the target exactly.
             *value = target - (target - *value) * (-dt / tau).exp();
@@ -141,7 +156,9 @@ mod tests {
                 colour_temperature: 2000.0,
                 shadow_side: 1.0,
                 candle: 1.0,
+                wax: 0.5,
                 moonlight: 1.0,
+                moon_side: -1.0,
                 sunshine: 0.0,
                 window_side: 1.0,
                 ambient: [0.3, 0.4, 0.6],
@@ -164,6 +181,7 @@ mod tests {
         let quickest = Ease {
             light: QUICKEST,
             candle: QUICKEST,
+            wax: QUICKEST,
         };
         let mut sill = sunset();
         let mut last = sill.shown().colour_temperature;
