@@ -25,6 +25,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+# The same naga wgpu uses, to check the shader without a GPU.
+naga = { version = "30", features = ["wgsl-in"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

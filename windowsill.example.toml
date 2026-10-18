@@ -1,7 +1,7 @@
 # windowsill.toml: every key is optional, and a missing file means defaults.
 #
 # Put it next to windowsill.exe, or in %APPDATA%\Windowsill. The sill re-reads
-# it whenever it is saved, and eases into the new colours over a second.
+# it whenever it is saved, and eases into the new look over two seconds.
 # If an edit doesn't make sense, the sill logs why and keeps the last good one.
 
 # Where the sill is in the world, for the sun and moon. Left out, the light is
@@ -16,9 +16,27 @@ fps_music = 30
 [palette]
 wood       = "#6b4529"   # the ledge's face
 wood_shade = "#54331f"   # the face toward its bottom edge
-lip        = "#946642"   # the thin top edge that catches the light
+lip        = "#946642"   # the thin front edge that catches the light, and the top
+grain      = "#452917"   # the darker lines of the grain along the board
 glow       = "#805738"   # the warmth on the glass just above the ledge
 glow_alpha = 0.42        # how strong that warmth starts, 0 to 1
+
+# The three things on the ledge. `at` is where each stands, from 0 at the left
+# end of the sill to 1 at the right.
+[plant]
+at   = 0.72
+pot  = "#a85c3d"   # the clay pot
+leaf = "#4f7a3d"   # the leaves in full light
+
+[jar]
+at    = 0.75
+glass = "#d1e6e0"   # shows mostly at its edges
+water = "#78a1a8"   # a little over half full
+
+[candle]
+at    = 0.775
+wax   = "#ede3cc"
+flame = "#ffb252"   # the flame, and the warmth it throws
 
 [ease]
 # How slowly the sill follows a change, in seconds: the time to cover about two

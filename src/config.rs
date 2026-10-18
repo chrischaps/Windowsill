@@ -15,7 +15,8 @@ use serde::Deserialize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
-use crate::palette::Palette;
+use crate::objects::{Candle, Jar, Plant};
+use crate::palette::{Look, Palette};
 use crate::sill::{self, Ease};
 use crate::sun::Place;
 
@@ -37,6 +38,10 @@ pub struct Config {
     pub fps_music: u32,
     /// The ledge's colours, as `"#rrggbb"` in the file.
     pub palette: Palette,
+    /// The three things on the ledge: where each stands and its colours.
+    pub plant: Plant,
+    pub jar: Jar,
+    pub candle: Candle,
     /// How slowly the sill follows a change, in seconds. Never under 2.
     pub ease: Ease,
 }
@@ -49,6 +54,9 @@ impl Default for Config {
             fps_idle: 15,
             fps_music: 30,
             palette: Palette::default(),
+            plant: Plant::default(),
+            jar: Jar::default(),
+            candle: Candle::default(),
             ease: Ease::default(),
         }
     }
@@ -61,6 +69,16 @@ impl Config {
             latitude: self.latitude?,
             longitude: self.longitude?,
         })
+    }
+
+    /// How the sill looks, for the renderer to ease toward.
+    pub fn look(&self) -> Look {
+        Look {
+            palette: self.palette,
+            plant: self.plant,
+            jar: self.jar,
+            candle: self.candle,
+        }
     }
 
     pub fn parse(text: &str) -> anyhow::Result<Self> {
@@ -108,6 +126,15 @@ impl Config {
                 "palette.glow_alpha {} is not between 0 and 1",
                 self.palette.glow_alpha
             );
+        }
+        for (name, at) in [
+            ("plant", self.plant.at),
+            ("jar", self.jar.at),
+            ("candle", self.candle.at),
+        ] {
+            if !(0.0..=1.0).contains(&at) {
+                bail!("{name}.at {at} is not between 0 and 1");
+            }
         }
         Ok(())
     }
@@ -245,7 +272,14 @@ mod tests {
         };
         let (e, d) = (example.palette, Palette::default());
         assert!(near(e.wood, d.wood) && near(e.wood_shade, d.wood_shade));
-        assert!(near(e.lip, d.lip) && near(e.glow, d.glow));
+        assert!(near(e.lip, d.lip) && near(e.grain, d.grain) && near(e.glow, d.glow));
+        let (plant, jar, candle) = (Plant::default(), Jar::default(), Candle::default());
+        assert_eq!(example.plant.at, plant.at);
+        assert!(near(example.plant.pot, plant.pot) && near(example.plant.leaf, plant.leaf));
+        assert_eq!(example.jar.at, jar.at);
+        assert!(near(example.jar.glass, jar.glass) && near(example.jar.water, jar.water));
+        assert_eq!(example.candle.at, candle.at);
+        assert!(near(example.candle.wax, candle.wax) && near(example.candle.flame, candle.flame));
         assert_eq!(e.glow_alpha, d.glow_alpha);
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
         assert_eq!(example.ease, Ease::default());
@@ -263,6 +297,9 @@ mod tests {
             "[palette]\nwood = \"brown\"",
             "[palette]\nwood = \"#12345\"",
             "[palette]\nglow_alpha = 1.5",
+            "[candle]\nat = 1.2",
+            "[jar]\nglass = \"clear\"",
+            "[plant]\nflower = \"#ffffff\"",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }
