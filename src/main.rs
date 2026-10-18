@@ -15,7 +15,8 @@
 //! rings with light now and then on a kick. It draws at 15 fps, and at 30
 //! while music plays, with each kick drawn the moment it is heard.
 //! When a fullscreen app, a game or a presentation comes up, it steps behind
-//! it, fades out and stops drawing until it is gone.
+//! it, fades out and stops drawing until it is gone. While the screen is
+//! locked it does nothing at all: no drawing, no listening, no looking.
 
 mod args;
 mod audio;
@@ -225,6 +226,10 @@ pub enum Wake {
     Located(location::Found),
     /// The machine woke from sleep.
     Woke,
+    /// The screen was locked.
+    Locked,
+    /// The screen was unlocked.
+    Unlocked,
     /// The music kicked. The payload is when the analysis thread heard it.
     Kick(Instant),
 }
@@ -245,6 +250,8 @@ enum Resting {
     Aside(Unplaced),
     /// Faded out behind something fullscreen; the payload says what.
     Covered(&'static str),
+    /// Hidden while the screen is locked, with everything stopped.
+    Locked,
 }
 
 struct App {
@@ -272,6 +279,8 @@ struct App {
     covered_seen: Instant,
     /// Whether the window has stepped behind the others while it fades out.
     lowered: bool,
+    /// Whether the screen is locked, so nobody can see the sill.
+    locked: bool,
     sill: Sill,
     /// When the sill was last eased, so each frame eases by the time it took.
     eased: Instant,
@@ -357,6 +366,7 @@ impl App {
             covered: covered(),
             covered_seen: Instant::now(),
             lowered: false,
+            locked: false,
             sill,
             eased: Instant::now(),
             sun_seen: world,
@@ -478,7 +488,7 @@ impl App {
 
     /// Looks at the desktop and puts the sill where it belongs: resting on the
     /// taskbar, or hidden when there is nowhere it can rest or something
-    /// fullscreen has come in front of it. It is cheap enough to
+    /// fullscreen has come in front of it, or the screen is locked. It is cheap enough to
     /// call whenever anything might have changed, and it only touches the window
     /// when the answer differs from what the window already is.
     fn rest(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
@@ -486,7 +496,50 @@ impl App {
             return Ok(());
         };
         let window = &window;
-        let now = match Self::place(event_loop) {
+        // Nobody can see it, so it goes at once rather than fading.
+        let now = if self.locked {
+            if matches!(self.resting, Resting::On(_)) {
+                window.set_visible(false);
+                self.presence.leave();
+            }
+            Resting::Locked
+        } else {
+            self.placed(event_loop, window)
+        };
+
+        // winit rewrites the ex-style on every show, hide, move and resize, so the
+        // glass styles go back on after each look.
+        #[cfg(windows)]
+        win32::make_glass(window)?;
+
+        if now != self.resting {
+            match now {
+                Resting::On(sill) => tracing::info!(
+                    "the sill rests at {}x{} +{}+{}",
+                    sill.width(),
+                    sill.height(),
+                    sill.left,
+                    sill.top
+                ),
+                Resting::Aside(why) => tracing::info!("stepping aside: {why}"),
+                Resting::Covered(what) => tracing::info!("stepping aside for {what}"),
+                Resting::Locked => tracing::info!("the screen is locked; sleeping until it opens"),
+                Resting::Unknown => {}
+            }
+            #[cfg(windows)]
+            tracing::debug!(
+                "sill ex-style {:#010x}",
+                win32::ex_style(window).unwrap_or(0)
+            );
+            self.resting = now;
+        }
+        Ok(())
+    }
+
+    /// Puts the window where the desktop says it belongs, showing, fading or
+    /// hiding it on the way, and says where that is.
+    fn placed(&mut self, event_loop: &ActiveEventLoop, window: &Window) -> Resting {
+        match Self::place(event_loop) {
             Ok(sill) => {
                 let size = PhysicalSize::new(sill.width() as u32, sill.height() as u32);
                 let position = PhysicalPosition::new(sill.left, sill.top);
@@ -538,34 +591,7 @@ impl App {
                 }
                 Resting::Aside(why)
             }
-        };
-
-        // winit rewrites the ex-style on every show, hide, move and resize, so the
-        // glass styles go back on after each look.
-        #[cfg(windows)]
-        win32::make_glass(window)?;
-
-        if now != self.resting {
-            match now {
-                Resting::On(sill) => tracing::info!(
-                    "the sill rests at {}x{} +{}+{}",
-                    sill.width(),
-                    sill.height(),
-                    sill.left,
-                    sill.top
-                ),
-                Resting::Aside(why) => tracing::info!("stepping aside: {why}"),
-                Resting::Covered(what) => tracing::info!("stepping aside for {what}"),
-                Resting::Unknown => {}
-            }
-            #[cfg(windows)]
-            tracing::debug!(
-                "sill ex-style {:#010x}",
-                win32::ex_style(window).unwrap_or(0)
-            );
-            self.resting = now;
         }
-        Ok(())
     }
 
     /// How the sill is answering the music: how far the dust has drifted, how
@@ -701,6 +727,20 @@ impl ApplicationHandler<Wake> for App {
                 tracing::debug!("woke from sleep");
                 self.whereabouts.woke(SystemTime::now());
             }
+            Wake::Locked => {
+                self.locked = true;
+                self.hearing.sleep();
+                self.look(event_loop);
+            }
+            Wake::Unlocked => {
+                tracing::info!("the screen is unlocked");
+                self.locked = false;
+                self.hearing.wake();
+                // Asked again now, so it never shows over something fullscreen.
+                self.covered = covered();
+                self.covered_seen = Instant::now();
+                self.look(event_loop);
+            }
             // Drawn now rather than up to a frame later; the frame after it
             // follows a whole frame on, so kicks never add to the frame rate
             // by more than one each.
@@ -773,6 +813,11 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // While locked, wake for nothing but events; the unlock is one of them.
+        if self.locked {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         self.hearing.poll();
         if Instant::now() >= self.covered_seen + COVER_EVERY {
             self.covered_seen = Instant::now();

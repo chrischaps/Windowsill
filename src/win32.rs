@@ -8,10 +8,13 @@
 //! winit call that might change the window's flags.
 //!
 //! winit also doesn't pass on the broadcasts that say the desktop has changed
-//! shape, or that the machine has woken from sleep, so [`watch_layout`]
-//! subclasses the window to hear them.
+//! shape, that the machine has woken from sleep, or that the screen has been
+//! locked, so [`watch_layout`] subclasses the window to hear them.
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::RemoteDesktop::{
+    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+};
 use windows_sys::Win32::System::Time::{
     GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
 };
@@ -24,8 +27,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC, RegisterWindowMessageW,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_NCDESTROY, WM_POWERBROADCAST, WM_SETTINGCHANGE, WS_EX_APPWINDOW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WM_NCDESTROY, WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WS_EX_APPWINDOW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WTS_SESSION_LOCK,
+    WTS_SESSION_UNLOCK,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -172,9 +176,10 @@ struct LayoutWatch {
 }
 
 /// Wakes the event loop with a [`Wake::Layout`] whenever the window hears that
-/// displays, DPI, the work area or the taskbar itself may have changed, and
-/// with a [`Wake::Woke`] when the machine wakes from sleep. The
-/// window is otherwise untouched: every message still goes on to winit.
+/// displays, DPI, the work area or the taskbar itself may have changed, with a
+/// [`Wake::Woke`] when the machine wakes from sleep, and with [`Wake::Locked`]
+/// and [`Wake::Unlocked`] as the screen locks and unlocks. The window is
+/// otherwise untouched: every message still goes on to winit.
 pub fn watch_layout(window: &Window, proxy: EventLoopProxy<Wake>) -> anyhow::Result<()> {
     let hwnd =
         hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
@@ -197,6 +202,14 @@ pub fn watch_layout(window: &Window, proxy: EventLoopProxy<Wake>) -> anyhow::Res
             std::io::Error::last_os_error()
         );
     }
+    // Without it the sill still runs; it just keeps drawing behind the lock screen.
+    // SAFETY: `hwnd` is live; the subclass unregisters it on WM_NCDESTROY.
+    if unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) } == 0 {
+        tracing::warn!(
+            "not watching for the screen to lock: {}",
+            std::io::Error::last_os_error()
+        );
+    }
     Ok(())
 }
 
@@ -213,6 +226,7 @@ unsafe extern "system" fn layout_subclass(
         // SAFETY: the window is going away, so this is the last time `watch` is
         // seen; it came from `Box::into_raw` in `watch_layout`.
         unsafe {
+            WTSUnRegisterSessionNotification(hwnd);
             RemoveWindowSubclass(hwnd, Some(layout_subclass), LAYOUT_SUBCLASS);
             drop(Box::from_raw(watch));
         }
@@ -224,6 +238,8 @@ unsafe extern "system" fn layout_subclass(
             WM_DPICHANGED => Some(Wake::Layout("DPI change")),
             WM_SETTINGCHANGE => Some(Wake::Layout("settings change")),
             WM_POWERBROADCAST if wparam as u32 == PBT_APMRESUMEAUTOMATIC => Some(Wake::Woke),
+            WM_WTSSESSION_CHANGE if wparam as u32 == WTS_SESSION_LOCK => Some(Wake::Locked),
+            WM_WTSSESSION_CHANGE if wparam as u32 == WTS_SESSION_UNLOCK => Some(Wake::Unlocked),
             _ if msg == watch.taskbar_created => Some(Wake::Layout("taskbar created")),
             _ => None,
         };

@@ -5,6 +5,8 @@
 //! current default output device whenever there is none, the stream reports
 //! an error, or the default output changes — e.g. plugging in
 //! headphones — and hands each new sample ring to the analysis thread.
+//! [`LoopbackCapture::sleep`] closes it and lets the analysis thread rest
+//! until [`LoopbackCapture::wake`].
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +20,7 @@ use ringbuf::HeapRb;
 use ringbuf::traits::{Producer, Split};
 use tracing::{debug, info, warn};
 
-use crate::audio::analysis::AudioSource;
+use crate::audio::analysis::{AudioSource, Feed};
 
 pub const RING_CAPACITY: usize = 16_384;
 
@@ -39,7 +41,9 @@ struct Active {
 pub struct LoopbackCapture {
     host: Option<cpal::Host>,
     active: Option<Active>,
-    sink: Sender<AudioSource>,
+    sink: Sender<Feed>,
+    /// Closed on purpose, and not to be reopened until woken.
+    asleep: bool,
     next_attempt: Instant,
     next_default_check: Instant,
     warned_unavailable: bool,
@@ -49,7 +53,7 @@ impl LoopbackCapture {
     /// Create the manager and try to open capture immediately. Never fails:
     /// with no usable device the visualizer simply runs on silence and keeps
     /// retrying in the background.
-    pub fn new(sink: Sender<AudioSource>) -> Self {
+    pub fn new(sink: Sender<Feed>) -> Self {
         // WASAPI on Windows, CoreAudio on macOS.
         let host = Some(cpal::default_host());
         let now = Instant::now();
@@ -57,6 +61,7 @@ impl LoopbackCapture {
             host,
             active: None,
             sink,
+            asleep: false,
             next_attempt: now,
             next_default_check: now + DEFAULT_CHECK_INTERVAL,
             warned_unavailable: false,
@@ -70,22 +75,51 @@ impl LoopbackCapture {
         self.active.as_ref().map(|a| a.device_name.as_str())
     }
 
+    /// Closes the stream and lets the analysis thread rest. Nothing reopens
+    /// until [`LoopbackCapture::wake`].
+    pub fn sleep(&mut self) {
+        if self.asleep {
+            return;
+        }
+        self.asleep = true;
+        self.active = None;
+        let _ = self.sink.send(Feed::Rest);
+        info!("audio capture asleep");
+    }
+
+    /// Opens the stream again on the next [`LoopbackCapture::poll`].
+    pub fn wake(&mut self) {
+        if self.asleep {
+            self.asleep = false;
+            self.next_attempt = Instant::now();
+        }
+    }
+
     pub fn poll(&mut self) {
         let Some(host) = self.host.as_ref() else {
             return;
         };
+        if self.asleep {
+            return;
+        }
         let now = Instant::now();
 
         if let Some(active) = &self.active {
             let mut reconnect = false;
             if active.failed.load(Ordering::Relaxed) {
-                info!(device = active.device_name, "audio stream lost, reconnecting");
+                info!(
+                    device = active.device_name,
+                    "audio stream lost, reconnecting"
+                );
                 reconnect = true;
             } else if now >= self.next_default_check {
                 self.next_default_check = now + DEFAULT_CHECK_INTERVAL;
                 let current = host.default_output_device().and_then(|d| d.id().ok());
                 if current != active.device_id {
-                    info!(from = active.device_name, "default output device changed, reconnecting");
+                    info!(
+                        from = active.device_name,
+                        "default output device changed, reconnecting"
+                    );
                     reconnect = true;
                 }
             }
@@ -99,14 +133,16 @@ impl LoopbackCapture {
             match open_loopback(host) {
                 Ok((active, source)) => {
                     // If the analysis thread is gone we're shutting down anyway.
-                    let _ = self.sink.send(source);
+                    let _ = self.sink.send(Feed::Listen(source));
                     self.active = Some(active);
                     self.warned_unavailable = false;
                     self.next_default_check = now + DEFAULT_CHECK_INTERVAL;
                 }
                 Err(e) => {
                     if !self.warned_unavailable {
-                        warn!("audio capture unavailable, retrying every {RETRY_INTERVAL:?}: {e:#}");
+                        warn!(
+                            "audio capture unavailable, retrying every {RETRY_INTERVAL:?}: {e:#}"
+                        );
                         self.warned_unavailable = true;
                     } else {
                         debug!("audio capture retry failed: {e:#}");
