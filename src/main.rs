@@ -1,15 +1,16 @@
 //! Windowsill: a thin, living strip that rests on top of the Windows taskbar.
 //!
-//! For now the sill is an empty pane of glass with nothing drawn on it yet.
 //! It rests on top of a bottom taskbar on the primary monitor and steps aside in
 //! any other layout. It follows the taskbar through display, DPI and monitor
 //! changes. Clicks fall through it, it never takes focus, and it stays out of
-//! the taskbar and Alt+Tab. For now it draws a flat wooden ledge that fades
-//! upward into clear glass, and eases in over a few seconds when it comes to rest.
+//! the taskbar and Alt+Tab. It draws a wooden ledge with a plant, a jar and a
+//! candle on it in the light of the real sun, under glass that fades upward to
+//! clear, and eases in over a few seconds when it comes to rest.
 //! Its colours and frame rate come from `windowsill.toml`, re-read on every save.
 
 mod config;
 mod glass;
+mod light;
 mod objects;
 mod palette;
 mod placement;
@@ -36,7 +37,7 @@ use palette::Blend;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use presence::Presence;
 use settle::Settle;
-use sill::Sill;
+use sill::{Sill, SillState};
 
 #[cfg(windows)]
 use win32::taskbar;
@@ -49,6 +50,27 @@ fn taskbar() -> Option<placement::Taskbar> {
 
 /// How long to wait after a save for the editor to finish writing the file.
 const QUIET: Duration = Duration::from_millis(150);
+
+/// How often to look at the sun again. It moves a quarter of a degree a minute,
+/// and the ease smooths each step, so this is plenty.
+const SUN_EVERY: Duration = Duration::from_secs(20);
+
+/// Where the light on the sill should be heading now, keeping whatever the
+/// sun doesn't decide from `state`. With no place set it is plain daylight.
+fn sunlight(config: &Config, state: SillState) -> SillState {
+    match config.place() {
+        Some(place) => light::in_sunlight(state, place, sun::position(place, SystemTime::now())),
+        None => {
+            let plain = SillState::default();
+            SillState {
+                beam_angle: plain.beam_angle,
+                colour_temperature: plain.colour_temperature,
+                shadow_side: plain.shadow_side,
+                ..state
+            }
+        }
+    }
+}
 
 /// Says where the sun is now, or that the sill doesn't know where it is.
 fn note_the_sun(config: &Config) {
@@ -132,6 +154,8 @@ struct App {
     sill: Sill,
     /// When the sill was last eased, so each frame eases by the time it took.
     eased: Instant,
+    /// When the sun was last looked at.
+    sun_seen: Instant,
     next_frame: Instant,
 }
 
@@ -144,6 +168,8 @@ impl App {
             Config::default()
         });
         note_the_sun(&config);
+        // Nothing is on show yet, so the sill starts in the light it should be in.
+        let sill = Sill::at(sunlight(&config, SillState::default()));
         Self {
             proxy,
             shader_path: config::shader_source(),
@@ -156,8 +182,9 @@ impl App {
             resting: Resting::Unknown,
             settle: Settle::default(),
             presence: Presence::default(),
-            sill: Sill::default(),
+            sill,
             eased: Instant::now(),
+            sun_seen: Instant::now(),
             next_frame: Instant::now(),
         }
     }
@@ -315,6 +342,7 @@ impl App {
                     self.appearance.toward(config.look(), Instant::now());
                     if config.place() != self.config.place() {
                         note_the_sun(&config);
+                        self.sill.target = sunlight(&config, self.sill.target);
                     }
                     self.config = config;
                 }
@@ -411,6 +439,10 @@ impl ApplicationHandler<Wake> for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
+                if now.duration_since(self.sun_seen) >= SUN_EVERY {
+                    self.sill.target = sunlight(&self.config, self.sill.target);
+                    self.sun_seen = now;
+                }
                 self.sill.step(
                     now.duration_since(self.eased).as_secs_f32(),
                     &self.config.ease,

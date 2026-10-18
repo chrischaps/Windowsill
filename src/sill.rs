@@ -78,6 +78,14 @@ pub struct Sill {
 }
 
 impl Sill {
+    /// A sill already showing `state`, with nothing to ease toward.
+    pub fn at(state: SillState) -> Self {
+        Self {
+            shown: state,
+            target: state,
+        }
+    }
+
     /// What to draw.
     pub fn shown(&self) -> SillState {
         self.shown
