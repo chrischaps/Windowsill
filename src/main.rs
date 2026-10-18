@@ -4,14 +4,17 @@
 //! It rests on top of a bottom taskbar on the primary monitor and steps aside in
 //! any other layout. It follows the taskbar through display, DPI and monitor
 //! changes. Clicks fall through it, it never takes focus, and it stays out of
-//! the taskbar and Alt+Tab. Drawing arrives with the rest of M1.
+//! the taskbar and Alt+Tab. For now it draws only a test band that fades to
+//! fully see-through, the proof that the glass works (#4).
 
+mod glass;
 mod placement;
 mod settle;
 #[cfg(windows)]
 mod win32;
 
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -19,6 +22,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
+use glass::Glass;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use settle::Settle;
 
@@ -30,6 +34,9 @@ use win32::taskbar;
 fn taskbar() -> Option<placement::Taskbar> {
     None
 }
+
+/// The idle frame rate. Nothing on the sill ever needs more.
+const FRAME: Duration = Duration::from_nanos(1_000_000_000 / 15);
 
 /// The desktop may have changed shape. The payload says what was heard.
 #[derive(Clone, Copy, Debug)]
@@ -46,9 +53,11 @@ enum Resting {
 struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<LayoutChanged>,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
+    glass: Option<Glass>,
     resting: Resting,
     settle: Settle,
+    next_frame: Instant,
 }
 
 impl App {
@@ -56,8 +65,10 @@ impl App {
         Self {
             proxy,
             window: None,
+            glass: None,
             resting: Resting::Unknown,
             settle: Settle::default(),
+            next_frame: Instant::now(),
         }
     }
 
@@ -83,7 +94,7 @@ impl App {
     }
 
     /// Opens the glass, hidden and not yet placed. [`App::rest`] moves and shows it.
-    fn open_sill(&self, event_loop: &ActiveEventLoop) -> anyhow::Result<Window> {
+    fn open_sill(&self, event_loop: &ActiveEventLoop, path: glass::Path) -> anyhow::Result<Window> {
         let mut attributes = WindowAttributes::default()
             .with_title("Windowsill")
             .with_decorations(false)
@@ -96,7 +107,9 @@ impl App {
         #[cfg(windows)]
         {
             use winit::platform::windows::WindowAttributesExtWindows;
-            attributes = attributes.with_skip_taskbar(true);
+            attributes = attributes
+                .with_skip_taskbar(true)
+                .with_no_redirection_bitmap(path.wants_no_redirection_bitmap());
         }
 
         let window = event_loop.create_window(attributes)?;
@@ -185,8 +198,17 @@ impl ApplicationHandler<LayoutChanged> for App {
         if self.window.is_some() {
             return;
         }
-        match self.open_sill(event_loop) {
-            Ok(window) => self.window = Some(window),
+        let path = glass::Path::from_env();
+        let opened = self.open_sill(event_loop, path).and_then(|window| {
+            let window = Arc::new(window);
+            let glass = Glass::new(window.clone(), path)?;
+            Ok((window, glass))
+        });
+        match opened {
+            Ok((window, glass)) => {
+                self.window = Some(window);
+                self.glass = Some(glass);
+            }
             Err(err) => {
                 tracing::error!("could not open the sill: {err:#}");
                 event_loop.exit();
@@ -205,8 +227,17 @@ impl ApplicationHandler<LayoutChanged> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
-            // The renderer (#4) resizes its surface here.
-            WindowEvent::Resized(size) => tracing::debug!("sill resized to {size:?}"),
+            WindowEvent::Resized(size) => {
+                tracing::debug!("sill resized to {size:?}");
+                if let Some(glass) = &mut self.glass {
+                    glass.resize(size);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(glass) = &mut self.glass {
+                    glass.draw();
+                }
+            }
             _ => {}
         }
     }
@@ -215,8 +246,19 @@ impl ApplicationHandler<LayoutChanged> for App {
         if self.settle.due(Instant::now()) {
             self.look(event_loop);
         }
-        // Nothing is animated yet, so between looks the loop only wakes for events.
-        event_loop.set_control_flow(match self.settle.next() {
+        // While the sill shows, draw at the idle rate. While it is aside, wake
+        // only for events and the settling looks.
+        let mut wake = self.settle.next();
+        if let (Resting::On(_), Some(window)) = (self.resting, &self.window) {
+            let now = Instant::now();
+            if now >= self.next_frame {
+                window.request_redraw();
+                // Never try to catch up on missed frames; just keep the pace.
+                self.next_frame = (self.next_frame + FRAME).max(now);
+            }
+            wake = Some(wake.map_or(self.next_frame, |at| at.min(self.next_frame)));
+        }
+        event_loop.set_control_flow(match wake {
             Some(at) => ControlFlow::WaitUntil(at),
             None => ControlFlow::Wait,
         });
