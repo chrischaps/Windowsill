@@ -143,7 +143,7 @@ fn orbit(s: f64) -> (f64, f64) {
 }
 
 /// How far the air lifts the sun at true `elevation`, in degrees.
-fn refraction(elevation: f64) -> f64 {
+pub fn refraction(elevation: f64) -> f64 {
     let te = elevation.to_radians().tan();
     let arcsec = if elevation > 85.0 {
         0.0
@@ -174,14 +174,14 @@ fn time(s: f64) -> SystemTime {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Reference values come from Skyfield with the JPL DE421 ephemeris, unless
     // a test says otherwise.
 
     /// A UTC moment, from a civil date.
-    fn utc(y: i64, m: i64, d: i64, h: f64) -> SystemTime {
+    pub fn utc(y: i64, m: i64, d: i64, h: f64) -> SystemTime {
         // Days from the epoch to a civil date (Howard Hinnant's algorithm).
         let y = if m <= 2 { y - 1 } else { y };
         let era = y.div_euclid(400);
