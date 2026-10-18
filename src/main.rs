@@ -30,6 +30,8 @@ mod hold;
 mod light;
 mod location;
 #[cfg(windows)]
+mod login;
+#[cfg(windows)]
 mod menu;
 mod moon;
 mod night;

@@ -14,14 +14,15 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetForegroundWindow,
-    GetWindowThreadProcessId, HMENU, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
-    SetForegroundWindow, TPM_BOTTOMALIGN, TPM_CENTERALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
-    TrackPopupMenu, WM_NULL, WS_EX_TOOLWINDOW, WS_POPUP,
+    GetWindowThreadProcessId, HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    PostMessageW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_CENTERALIGN, TPM_NONOTIFY,
+    TPM_RETURNCMD, TrackPopupMenu, WM_NULL, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
 use crate::hold::Choice;
+use crate::login;
 
 /// The items' ids. Zero is what the menu returns when nothing was chosen.
 const START_AT_LOGIN: usize = 1;
@@ -79,7 +80,8 @@ fn show(x: i32, y: i32) -> Choice {
             );
             return Choice::Nothing;
         }
-        let menu = build();
+        let starts = login::enabled();
+        let menu = build(starts);
         let before = GetForegroundWindow();
         take_foreground(owner, before);
         let picked = TrackPopupMenu(
@@ -102,17 +104,24 @@ fn show(x: i32, y: i32) -> Choice {
         DestroyMenu(menu);
         DestroyWindow(owner);
         match picked {
+            START_AT_LOGIN => {
+                match login::set(!starts) {
+                    Ok(()) => tracing::info!("start at login: {}", !starts),
+                    Err(err) => tracing::warn!("could not change start at login: {err}"),
+                }
+                Choice::Nothing
+            }
             QUIT => Choice::Quit,
             _ => Choice::Nothing,
         }
     }
 }
 
-/// The menu's items. *Start at login* waits, greyed, for #23.
+/// The menu's items, with *Start at login* ticked if it `starts`.
 ///
 /// # Safety
 /// Must be destroyed with `DestroyMenu` on the same thread.
-unsafe fn build() -> HMENU {
+unsafe fn build(starts: bool) -> HMENU {
     // SAFETY: as in `show`.
     unsafe {
         let about = CreatePopupMenu();
@@ -122,7 +131,11 @@ unsafe fn build() -> HMENU {
         let menu = CreatePopupMenu();
         AppendMenuW(
             menu,
-            MF_STRING | MF_GRAYED,
+            if starts {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            },
             START_AT_LOGIN,
             wide("Start at login").as_ptr(),
         );
