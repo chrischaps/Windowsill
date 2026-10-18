@@ -17,7 +17,8 @@ use windows_sys::Win32::System::Time::{
 };
 use windows_sys::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc,
-    RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
+    QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, RemoveWindowSubclass,
+    SHAppBarMessage, SHQueryUserNotificationState, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC, RegisterWindowMessageW,
@@ -115,6 +116,22 @@ pub fn taskbar() -> Option<Taskbar> {
         },
         edge,
     })
+}
+
+/// What has come in front of the sill, if anything: a fullscreen app, a game,
+/// or a presentation. `None` also when the shell won't say, so the sill stays.
+pub fn covered() -> Option<&'static str> {
+    let mut state = 0;
+    // SAFETY: `state` is a QUERY_USER_NOTIFICATION_STATE that outlives the call.
+    if unsafe { SHQueryUserNotificationState(&mut state) } < 0 {
+        return None;
+    }
+    match state {
+        QUNS_BUSY => Some("a fullscreen app"),
+        QUNS_RUNNING_D3D_FULL_SCREEN => Some("a fullscreen game"),
+        QUNS_PRESENTATION_MODE => Some("a presentation"),
+        _ => None,
+    }
 }
 
 /// What `GetTimeZoneInformation` returns while daylight saving time is on.
