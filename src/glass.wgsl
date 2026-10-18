@@ -32,9 +32,11 @@ struct Sill {
     // The candle's flame in .x, from 0 to 1, how much of it is left in .y,
     // and in .zw how its flame breathes: height and sway, each -1 to 1.
     candle: vec4<f32>,
-    // How stirred the dust in the air is by the music, from 0 to 1, and in .y
-    // how far through its cycle it has drifted, from 0 to 1.
-    dust: vec4<f32>,
+    // How stirred the dust in the air is by the music, from 0 to 1, in .y how
+    // far through its cycle it has drifted, from 0 to 1, in .z how many
+    // degrees the plant's leaves lean to the right, and in .w how bright the
+    // jar's ring of light is, from 0 to 1.
+    music: vec4<f32>,
     // Where the plant, jar and candle stand, from 0 to 1 across, and in .w the
     // strip's width in physical pixels.
     places: vec4<f32>,
@@ -394,7 +396,8 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     let dark = sill.leaf.rgb * 0.5;
 
     // Seven leaves fanned from the pot, the outer ones behind and in shade,
-    // each drooping a little more the further out it leans.
+    // each drooping a little more the further out it leans. The bass leans
+    // them all one way, the long ones a little further than the short.
     var angles = array<f32, 7>(-64.0, -40.0, -18.0, 2.0, 21.0, 42.0, 63.0);
     var lengths = array<f32, 7>(19.0, 26.0, 31.0, 34.0, 30.0, 25.0, 18.0);
     var stems = array<f32, 7>(5.0, 8.0, 11.0, 13.0, 10.0, 8.0, 5.0);
@@ -402,8 +405,8 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     var depth = array<f32, 7>(0.74, 0.74, 0.86, 0.86, 0.95, 0.95, 1.0);
     for (var k = 0; k < 7; k++) {
         let i = order[k];
-        let angle = radians(angles[i]);
         let len = lengths[i];
+        let angle = radians(angles[i] + sill.music.z * (0.55 + 0.45 * len / 34.0));
         let dir = vec2<f32>(sin(angle), cos(angle));
         let across = vec2<f32>(dir.y, -dir.x);
         let start = root + dir * stems[i];
@@ -470,6 +473,18 @@ fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     let edge_light = mix(0.75, 1.1, 0.5 + 0.5 * sign(p.x) * room_hand());
     let edge_sun = sunlight() * shine() * 0.35 * smoothstep(0.0, 1.0, sign(p.x) * sun_side() * 2.0 + 0.5);
     colour = over(colour, glass_rgb * edge_light + edge_sun, cover(wall) * 0.5);
+
+    // When a kick strikes it, the glass rings with a faint light: round its
+    // walls, along the water's edge, and in a soft halo just outside.
+    let ring = sill.music.w;
+    if ring > 0.002 {
+        let rung = mix(glass_rgb, vec3<f32>(1.0), 0.7);
+        colour = over(colour, rung, cover(wall) * ring * 0.35);
+        colour = over(colour, rung, cover(meniscus) * ring * 0.3);
+        let out = max(glass, 0.0);
+        let halo = exp(-out * out / (2.0 * 3.0 * 3.0)) * (1.0 - cover(glass));
+        colour = over(colour, rung, halo * ring * 0.1);
+    }
 
     // A long highlight down the lit side, and a small one on the shoulder.
     let side = room_hand();
@@ -553,16 +568,16 @@ fn candlelight(colour: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 // of a grid that rises slowly through the air, wandering about the middle of
 // its cell, and turns as it goes so it catches the light and loses it. How far
 // the grid has risen, how far each mote has wandered and how far it has
-// turned are all whole cycles of `sill.dust.y`, and the grid repeats after
+// turned are all whole cycles of `sill.music.y`, and the grid repeats after
 // DUST_TILE cells, so the dust comes round to where it began without a jump.
-// In silence `sill.dust.y` stands still and the motes fade where they are.
+// In silence `sill.music.y` stands still and the motes fade where they are.
 
 const DUST_CELL: f32 = 28.0;
 const DUST_TILE: vec2<f32> = vec2<f32>(256.0, 128.0);
 
 // How much of a mote covers `p`, from 0 to 1, and how much light it catches.
 fn motes(p: vec2<f32>) -> f32 {
-    let cycle = sill.dust.y;
+    let cycle = sill.music.y;
     let q = p - vec2<f32>(0.0, cycle * DUST_TILE.y * DUST_CELL);
     let cell = floor(q / DUST_CELL);
     let id = cell - DUST_TILE * floor(cell / DUST_TILE);
@@ -588,7 +603,7 @@ fn motes(p: vec2<f32>) -> f32 {
 // air was before they were drawn, so whatever covers a mote hides it, and
 // `beam` is how much sun is in the air at `p`.
 fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>, air: f32, beam: f32) -> vec4<f32> {
-    let stir = sill.dust.x;
+    let stir = sill.music.x;
     if stir < 0.002 || p.y < LEDGE {
         return colour;
     }

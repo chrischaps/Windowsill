@@ -11,7 +11,8 @@
 //! re-read on every save.
 //! `--day-in 60s` runs a whole day in a minute, to check how it looks.
 //! It listens to whatever the PC is playing, and while music plays, dust drifts
-//! in the light on the beat.
+//! in the light on the beat, the plant's leaves lean to the bass and the jar
+//! rings with light now and then on a kick.
 
 mod args;
 mod audio;
@@ -27,10 +28,12 @@ mod objects;
 mod palette;
 mod placement;
 mod presence;
+mod ring;
 mod settle;
 mod sill;
 mod sky;
 mod sun;
+mod sway;
 #[cfg(windows)]
 mod win32;
 
@@ -260,6 +263,10 @@ struct App {
     music: Output<AudioFeatures>,
     /// How far the dust in the beam has drifted.
     drift: dust::Drift,
+    /// How far the plant's leaves lean to the bass.
+    sway: sway::Sway,
+    /// How the jar is ringing.
+    ring: ring::Ring,
 }
 
 impl App {
@@ -323,6 +330,8 @@ impl App {
             hearing: LoopbackCapture::new(sink),
             music,
             drift: dust::Drift::default(),
+            sway: sway::Sway::default(),
+            ring: ring::Ring::default(),
         }
     }
 
@@ -431,6 +440,7 @@ impl App {
                 if !matches!(self.resting, Resting::On(_)) {
                     // The swapchain still holds the last frame from before it
                     // stepped aside; clear it so the sill eases in from nothing.
+                    let answers = self.answers();
                     if let Some(glass) = &mut self.glass {
                         glass.draw(
                             window.scale_factor(),
@@ -438,7 +448,7 @@ impl App {
                             &self.appearance.at(Instant::now()),
                             &self.sill.shown(),
                             [0.0; 2],
-                            self.drift.at(),
+                            answers,
                         );
                     }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
@@ -484,6 +494,12 @@ impl App {
     }
 
     /// Time between frames while the room is quiet.
+    /// How the sill is answering the music: how far the dust has drifted, how
+    /// far the leaves lean, and how bright the jar's ring is.
+    fn answers(&self) -> [f32; 3] {
+        [self.drift.at(), self.sway.lean(), self.ring.light()]
+    }
+
     fn frame(&self) -> Duration {
         Duration::from_secs(1) / self.config.fps_idle
     }
@@ -647,7 +663,10 @@ impl ApplicationHandler<Wake> for App {
                 self.sill.hear(dt, &self.config.ease);
                 self.drift
                     .advance(dt, self.sill.shown().dust, heard.beat_phase);
+                self.sway.advance(dt, heard.kick);
+                self.ring.advance(dt, heard.kick);
                 self.eased = now;
+                let answers = self.answers();
                 if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
                     glass.draw(
                         window.scale_factor(),
@@ -655,7 +674,7 @@ impl ApplicationHandler<Wake> for App {
                         &self.appearance.at(now),
                         &self.sill.shown(),
                         night::flicker(now.duration_since(self.born).as_secs_f64()),
-                        self.drift.at(),
+                        answers,
                     );
                 }
             }

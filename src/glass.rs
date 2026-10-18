@@ -104,8 +104,9 @@ struct Uniforms {
     sky: [f32; 4],
     /// The candle's flame, how much of it is left, and its flicker.
     candle: [f32; 4],
-    /// How stirred the dust is, and how far through its cycle it has drifted.
-    dust: [f32; 4],
+    /// How stirred the dust is, how far through its cycle it has drifted, how
+    /// far the plant leans, and how bright the jar's ring is.
+    music: [f32; 4],
     /// Where the plant, jar and candle stand, from 0 to 1 across, and the
     /// strip's width in physical pixels.
     places: [f32; 4],
@@ -252,7 +253,9 @@ impl Glass {
     /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
     /// of the sill is there, from 0 to 1, `look` its colours and where things
     /// stand on it, `sill` the light it is in, `flicker` how the candle's
-    /// flame breathes, and `drift` how far the dust has come through its cycle.
+    /// flame breathes, and `music` how the sill answers the music: how far the
+    /// dust has come through its cycle, how many degrees the plant's leaves
+    /// lean, and how bright the jar's ring is.
     pub fn draw(
         &mut self,
         scale: f64,
@@ -260,7 +263,7 @@ impl Glass {
         look: &Look,
         sill: &SillState,
         flicker: [f32; 2],
-        drift: f32,
+        music: [f32; 3],
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -300,7 +303,7 @@ impl Glass {
                 sill.vivid,
             ],
             candle: [sill.candle, sill.wax, flicker[0], flicker[1]],
-            dust: [sill.dust, drift, 0.0, 0.0],
+            music: [sill.dust, music[0], music[1], music[2]],
             places: [
                 look.plant.at,
                 look.jar.at,
