@@ -1,8 +1,8 @@
 # Windowsill
 
-A thin, living strip that rests on top of the Windows taskbar. It looks like a windowsill, with a potted plant, a glass jar and a candle on it, all in the light of the real sky. The light follows your local sun and weather. When music plays, the sill answers quietly: dust drifts in the beam, and the plant leans with the bass.
+A potted plant, a glass jar and a candle standing on the Windows taskbar, as if it were a windowsill, all in the light of the real sky. The light follows your local sun and weather. When music plays, they answer quietly: dust drifts in the light, and the plant leans with the bass.
 
-It asks for nothing. There are no notifications, no window to manage, and every click passes through. You glance at it the way you glance at a real window, and it tells you the time of day without a number.
+It asks for nothing. There are no notifications, no window to manage, and every click passes through everywhere but the things themselves. Those you can pick up and set down somewhere else along the taskbar, and they stay where you put them. You glance at it the way you glance at a real window, and it tells you the time of day without a number.
 
 **Status:** pre-v1. The work is tracked in [milestones](https://github.com/chrischaps/Windowsill/milestones) M1–M4. The full design is in [docs/proposal.md](docs/proposal.md).
 
@@ -17,7 +17,7 @@ Windows 10/11 only for now. It is built on Rust, winit, wgpu and (from M3) cpal,
 
 ## Settings
 
-Copy [windowsill.example.toml](windowsill.example.toml) to `windowsill.toml` next to the exe, or to `%APPDATA%\Windowsill`, to set its frame rate and the ledge's colours. The sill learns where it is from Windows' location service; set `latitude` and `longitude` there to choose the place yourself. The sill re-reads it on every save. While the source is on disk, it also reloads `src/glass.wgsl` on save, so the ledge can be tuned while it runs.
+Copy [windowsill.example.toml](windowsill.example.toml) to `windowsill.toml` next to the exe, or to `%APPDATA%\Windowsill`, to set its frame rate, where things stand to begin with, and their colours. The sill learns where it is from Windows' location service; set `latitude` and `longitude` there to choose the place yourself. The sill re-reads it on every save. While the source is on disk, it also reloads `src/glass.wgsl` on save, so the things can be retuned while it runs.
 
 ## Checking a whole day
 

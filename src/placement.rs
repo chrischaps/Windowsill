@@ -6,8 +6,9 @@
 
 use std::fmt;
 
-/// The strip's height in logical pixels.
-pub const SILL_HEIGHT: f64 = 120.0;
+/// The strip's height in logical pixels: room for the plant's leaves, the
+/// candle's warmth and a thing lifted off the edge, and no more.
+pub const SILL_HEIGHT: f64 = 90.0;
 
 /// A rectangle in physical pixels, edges exclusive on the right and bottom like a Win32 `RECT`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,8 +84,8 @@ impl fmt::Display for Unplaced {
     }
 }
 
-/// The sill's rectangle: as wide as the primary monitor, 120 logical pixels
-/// tall, with its bottom edge touching the top of the taskbar.
+/// The sill's rectangle: as wide as the primary monitor, [`SILL_HEIGHT`]
+/// logical pixels tall, with its bottom edge touching the top of the taskbar.
 pub fn place(monitor: Rect, scale: f64, taskbar: Option<Taskbar>) -> Result<Rect, Unplaced> {
     let taskbar = taskbar.ok_or(Unplaced::NoTaskbar)?;
     if taskbar.auto_hide {
@@ -144,7 +145,11 @@ mod tests {
                 sill.bottom, taskbar.rect.top,
                 "touches the taskbar at {scale}"
             );
-            assert_eq!(sill.height(), (120.0 * scale) as i32, "height at {scale}");
+            assert_eq!(
+                sill.height(),
+                (SILL_HEIGHT * scale).round() as i32,
+                "height at {scale}"
+            );
             assert_eq!(
                 (sill.left, sill.right),
                 (monitor.left, monitor.right),
@@ -163,7 +168,7 @@ mod tests {
         };
         assert_eq!(
             place(monitor, 1.0, Some(taskbar)),
-            Ok(rect(-2560, 1472, 0, 1592))
+            Ok(rect(-2560, 1502, 0, 1592))
         );
     }
 

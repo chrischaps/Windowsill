@@ -31,7 +31,7 @@ const QUIT: usize = 2;
 /// What *About* says: what this is, and what it does with what it hears.
 const ABOUT: [&str; 4] = [
     concat!("Windowsill ", env!("CARGO_PKG_VERSION")),
-    "A ledge in the light of the real sun and moon.",
+    "A few things on the taskbar, in the light of the real sun and moon.",
     "It hears what this PC plays only to move with it.",
     "Nothing it hears is recorded, kept or sent.",
 ];

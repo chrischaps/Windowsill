@@ -1,6 +1,6 @@
 //! The pane itself: a wgpu surface whose alpha reaches the desktop.
 //!
-//! The sill has to fade to fully see-through above the ledge, so the swapchain
+//! The sill is see-through everywhere but the things on it, so the swapchain
 //! must carry per-pixel alpha all the way to the compositor. A plain DXGI
 //! swapchain made from an HWND can't: wgpu only offers it `Opaque`. What works
 //! is the DirectComposition path, where wgpu makes a composition visual over the
@@ -17,6 +17,7 @@ use anyhow::{Context, anyhow};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+use crate::carry::Pose;
 use crate::palette::Look;
 use crate::sill::SillState;
 
@@ -96,12 +97,10 @@ struct Uniforms {
     height: f32,
     scale: f32,
     presence: f32,
-    glow_alpha: f32,
+    pad: f32,
+    /// The jar's lid, and its lit top edge.
     wood: [f32; 4],
-    wood_shade: [f32; 4],
     lip: [f32; 4],
-    glow: [f32; 4],
-    grain: [f32; 4],
     /// Beam angle, colour temperature, shadow side and moonlight.
     light: [f32; 4],
     /// How much sun the window lets in, which side its light comes from, and
@@ -114,9 +113,15 @@ struct Uniforms {
     /// How stirred the dust is, how far through its cycle it has drifted, how
     /// far the plant leans, and how bright the jar's ring is.
     music: [f32; 4],
-    /// Where the plant, jar and candle stand, from 0 to 1 across, and the
-    /// strip's width in physical pixels.
+    /// Where the plant, jar and candle stand, in physical pixels across, and
+    /// which of them is in front.
     places: [f32; 4],
+    /// How high each is lifted, in logical pixels.
+    lift: [f32; 4],
+    /// How far each tips, in degrees to the right.
+    tip: [f32; 4],
+    /// How far what is inside each trails, in degrees to the right.
+    swing: [f32; 4],
     pot: [f32; 4],
     leaf: [f32; 4],
     glass: [f32; 4],
@@ -219,7 +224,9 @@ impl Glass {
     /// stand on it, `sill` the light it is in, `flicker` how the candle's
     /// flame breathes, and `music` how the sill answers the music: how far the
     /// dust has come through its cycle, how many degrees the plant's leaves
-    /// lean, and how bright the jar's ring is.
+    /// lean, and how bright the jar's ring is. `pose` is how the things stand,
+    /// and how a hand is carrying them.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         scale: f64,
@@ -228,6 +235,7 @@ impl Glass {
         sill: &SillState,
         flicker: [f32; 2],
         music: [f32; 3],
+        pose: &Pose,
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -246,8 +254,9 @@ impl Glass {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let size = [self.config.width, self.config.height];
-        self.painter
-            .paint(&view, size, scale, presence, look, sill, flicker, music);
+        self.painter.paint(
+            &view, size, scale, presence, look, sill, flicker, music, pose,
+        );
         self.painter.queue.present(frame);
     }
 }
@@ -361,18 +370,19 @@ impl Painter {
         sill: &SillState,
         flicker: [f32; 2],
         music: [f32; 3],
+        pose: &Pose,
     ) {
         let palette = &look.palette;
+        let scale = scale as f32;
+        let [plant, jar, candle] = pose.x.map(|x| x * scale);
+        let four = |[a, b, c]: [f32; 3]| [a, b, c, 0.0];
         let uniforms = Uniforms {
             height: size[1] as f32,
-            scale: scale as f32,
+            scale,
             presence,
-            glow_alpha: palette.glow_alpha,
+            pad: 0.0,
             wood: palette.wood.padded(),
-            wood_shade: palette.wood_shade.padded(),
             lip: palette.lip.padded(),
-            glow: palette.glow.padded(),
-            grain: palette.grain.padded(),
             light: [
                 sill.beam_angle,
                 sill.colour_temperature,
@@ -388,7 +398,10 @@ impl Painter {
             ],
             candle: [sill.candle, sill.wax, flicker[0], flicker[1]],
             music: [sill.dust, music[0], music[1], music[2]],
-            places: [look.plant.at, look.jar.at, look.candle.at, size[0] as f32],
+            places: [plant, jar, candle, pose.front as f32],
+            lift: four(pose.lift),
+            tip: four(pose.tip),
+            swing: four(pose.swing),
             pot: look.plant.pot.padded(),
             leaf: look.plant.leaf.padded(),
             glass: look.jar.glass.padded(),
