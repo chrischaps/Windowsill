@@ -16,6 +16,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
 use crate::palette::Palette;
+use crate::sun::Place;
 
 pub const FILE_NAME: &str = "windowsill.toml";
 
@@ -25,7 +26,7 @@ const SHADER_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/glass.wgsl
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Where the sill is in the world, for the sun and moon (from #7). Unknown
+    /// Where the sill is in the world, for the sun and moon. Unknown
     /// means plain daylight.
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
@@ -50,6 +51,14 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Where the sill is, once both halves are known.
+    pub fn place(&self) -> Option<Place> {
+        Some(Place {
+            latitude: self.latitude?,
+            longitude: self.longitude?,
+        })
+    }
+
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let config: Self = toml::from_str(text)?;
         config.check()?;

@@ -14,12 +14,13 @@ mod palette;
 mod placement;
 mod presence;
 mod settle;
+mod sun;
 #[cfg(windows)]
 mod win32;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -45,6 +46,47 @@ fn taskbar() -> Option<placement::Taskbar> {
 
 /// How long to wait after a save for the editor to finish writing the file.
 const QUIET: Duration = Duration::from_millis(150);
+
+/// Says where the sun is now, or that the sill doesn't know where it is.
+fn note_the_sun(config: &Config) {
+    let Some(place) = config.place() else {
+        tracing::info!("no latitude and longitude set; the sill shows plain daylight");
+        return;
+    };
+    let now = SystemTime::now();
+    let sun = sun::position(place, now);
+    let day = match sun::day(place, now) {
+        sun::Day::Rises { rise, set } => {
+            format!(
+                "sunrise {}, sunset {}",
+                from_now(rise, now),
+                from_now(set, now)
+            )
+        }
+        sun::Day::NeverSets => "it does not set today".into(),
+        sun::Day::NeverRises => "it does not rise today".into(),
+    };
+    tracing::info!(
+        "the sun is {:.1}° up at {:.0}°; {day}",
+        sun.elevation,
+        sun.azimuth
+    );
+}
+
+/// `at` as a span of time before or after `now`, e.g. "in 3h 05m".
+fn from_now(at: SystemTime, now: SystemTime) -> String {
+    let (span, ago) = match at.duration_since(now) {
+        Ok(ahead) => (ahead, false),
+        Err(behind) => (behind.duration(), true),
+    };
+    let minutes = span.as_secs() / 60;
+    let span = format!("{}h {:02}m", minutes / 60, minutes % 60);
+    if ago {
+        format!("{span} ago")
+    } else {
+        format!("in {span}")
+    }
+}
 
 /// Why the event loop was woken from outside.
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +137,7 @@ impl App {
             tracing::error!("{err:#}; using the defaults until it is fixed");
             Config::default()
         });
+        note_the_sun(&config);
         Self {
             proxy,
             shader_path: config::shader_source(),
@@ -257,6 +300,9 @@ impl App {
                 Ok(config) => {
                     tracing::info!("config reloaded");
                     self.palette.toward(config.palette, Instant::now());
+                    if config.place() != self.config.place() {
+                        note_the_sun(&config);
+                    }
                     self.config = config;
                 }
                 Err(err) => tracing::error!("{err:#}; keeping the last good config"),
