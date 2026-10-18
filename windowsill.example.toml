@@ -9,6 +9,11 @@
 # latitude = 47.61
 # longitude = -122.33
 
+# The way you face when you look at the screen, in degrees clockwise from north
+# (0 north, 90 east, 180 south, 270 west). It sets which side the sun comes in
+# from. Left out, the window faces the equator: south in the north.
+# facing = 180
+
 # Frames per second while the room is quiet, and while music plays.
 fps_idle = 15
 fps_music = 30

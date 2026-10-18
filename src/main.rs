@@ -58,8 +58,10 @@ const SUN_EVERY: Duration = Duration::from_secs(20);
 /// Where the light on the sill should be heading now, keeping whatever the
 /// sun doesn't decide from `state`. With no place set it is plain daylight.
 fn sunlight(config: &Config, state: SillState) -> SillState {
-    match config.place() {
-        Some(place) => light::in_sunlight(state, place, sun::position(place, SystemTime::now())),
+    match config.place().zip(config.facing()) {
+        Some((place, facing)) => {
+            light::in_sunlight(state, facing, sun::position(place, SystemTime::now()))
+        }
         None => {
             let plain = SillState::default();
             SillState {
@@ -342,8 +344,8 @@ impl App {
                     self.appearance.toward(config.look(), Instant::now());
                     if config.place() != self.config.place() {
                         note_the_sun(&config);
-                        self.sill.target = sunlight(&config, self.sill.target);
                     }
+                    self.sill.target = sunlight(&config, self.sill.target);
                     self.config = config;
                 }
                 Err(err) => tracing::error!("{err:#}; keeping the last good config"),

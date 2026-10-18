@@ -1,13 +1,14 @@
 //! What the real sun does to the sill: how high the beam comes in, what colour
 //! it is, and which way the shadows fall.
 //!
-//! The sill is taken to be in a window that faces the equator, the side the sun
-//! spends its day on. From the north it looks south, so the morning sun comes
-//! in from the left and shadows fall to the right. In the afternoon they swap.
+//! The sill is in a window that faces the way you do when you look at the
+//! screen. Unless told otherwise it faces the equator, the side the sun spends
+//! its day on. From the north that is south, so the morning sun comes in from
+//! the left and shadows fall to the right. In the afternoon they swap.
 //! From the south it is the mirror image.
 
 use crate::sill::SillState;
-use crate::sun::{Place, Sun};
+use crate::sun::Sun;
 
 /// The light at its warmest, with the sun on the horizon, in kelvin.
 const HORIZON_WARMTH: f32 = 1900.0;
@@ -28,23 +29,29 @@ pub fn colour_temperature(elevation: f32) -> f32 {
     HIGH_WHITE - (HIGH_WHITE - HORIZON_WARMTH) * (-up / WHITENING).exp()
 }
 
-/// Which way shadows fall for a sun at `azimuth`, seen from a window facing the
-/// equator at `latitude`: -1 to the left, 0 straight back, 1 to the right.
-pub fn shadow_side(latitude: f64, azimuth: f64) -> f32 {
-    let facing = if latitude >= 0.0 { 180.0 } else { 0.0 };
+/// The way a window faces the equator from `latitude`, in degrees clockwise
+/// from north.
+pub fn toward_the_equator(latitude: f64) -> f64 {
+    if latitude >= 0.0 { 180.0 } else { 0.0 }
+}
+
+/// Which way shadows fall for a sun at `azimuth`, seen through a window that
+/// looks out toward `facing`: -1 to the left, 0 straight back, 1 to the right.
+pub fn shadow_side(facing: f64, azimuth: f64) -> f32 {
     // Where the sun stands across the window, -1 at its left edge to 1 at its
     // right. The shadow falls away from it.
     let across = (azimuth - facing).to_radians().sin();
     -across as f32
 }
 
-/// `state` with its beam, colour and shadows set by the real sun.
-pub fn in_sunlight(state: SillState, place: Place, sun: Sun) -> SillState {
+/// `state` with its beam, colour and shadows set by the real sun, seen through
+/// a window that looks out toward `facing`.
+pub fn in_sunlight(state: SillState, facing: f64, sun: Sun) -> SillState {
     let elevation = sun.elevation as f32;
     SillState {
         beam_angle: elevation.max(BELOW),
         colour_temperature: colour_temperature(elevation),
-        shadow_side: shadow_side(place.latitude, sun.azimuth),
+        shadow_side: shadow_side(facing, sun.azimuth),
         ..state
     }
 }
@@ -53,14 +60,9 @@ pub fn in_sunlight(state: SillState, place: Place, sun: Sun) -> SillState {
 mod tests {
     use super::*;
 
-    const SEATTLE: Place = Place {
-        latitude: 47.61,
-        longitude: -122.33,
-    };
-    const SYDNEY: Place = Place {
-        latitude: -33.87,
-        longitude: 151.21,
-    };
+    /// Looking out of a window in the north, and in the south.
+    const SEATTLE: f64 = 180.0;
+    const SYDNEY: f64 = 0.0;
 
     fn at(elevation: f64, azimuth: f64) -> Sun {
         Sun { elevation, azimuth }
@@ -88,6 +90,23 @@ mod tests {
         // faces north, so the east is on the right.
         let morning = in_sunlight(SillState::default(), SYDNEY, at(15.0, 70.0));
         assert!(morning.shadow_side < -0.5, "{morning:?}");
+    }
+
+    #[test]
+    fn the_window_faces_the_equator_unless_told() {
+        assert_eq!(toward_the_equator(47.61), SEATTLE);
+        assert_eq!(toward_the_equator(-33.87), SYDNEY);
+    }
+
+    #[test]
+    fn looking_north_from_the_north_mirrors_looking_south() {
+        // Facing north, the east is on the right, so the morning sun comes
+        // from the right and shadows fall to the left.
+        let morning = in_sunlight(SillState::default(), 0.0, at(15.0, 110.0));
+        assert!(morning.shadow_side < -0.5, "{morning:?}");
+        // Facing east, the noon sun in the south is on the right.
+        let noon = in_sunlight(SillState::default(), 90.0, at(40.0, 180.0));
+        assert!(noon.shadow_side < -0.9, "{noon:?}");
     }
 
     #[test]

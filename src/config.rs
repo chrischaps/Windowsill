@@ -15,6 +15,7 @@ use serde::Deserialize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
+use crate::light;
 use crate::objects::{Candle, Jar, Plant};
 use crate::palette::{Look, Palette};
 use crate::sill::{self, Ease};
@@ -32,6 +33,10 @@ pub struct Config {
     /// means plain daylight.
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    /// The way you face when you look at the screen, in degrees clockwise from
+    /// north. The sill's window looks out that way. Unknown means toward the
+    /// equator, the side the sun is on.
+    pub facing: Option<f64>,
     /// Frames per second while the room is quiet.
     pub fps_idle: u32,
     /// Frames per second while music plays (from M3).
@@ -51,6 +56,7 @@ impl Default for Config {
         Self {
             latitude: None,
             longitude: None,
+            facing: None,
             fps_idle: 15,
             fps_music: 30,
             palette: Palette::default(),
@@ -69,6 +75,16 @@ impl Config {
             latitude: self.latitude?,
             longitude: self.longitude?,
         })
+    }
+
+    /// The way the sill's window looks out, in degrees clockwise from north,
+    /// once it is known where it is.
+    pub fn facing(&self) -> Option<f64> {
+        let place = self.place()?;
+        Some(
+            self.facing
+                .unwrap_or_else(|| light::toward_the_equator(place.latitude)),
+        )
     }
 
     /// How the sill looks, for the renderer to ease toward.
@@ -107,6 +123,11 @@ impl Config {
             && !(-180.0..=180.0).contains(&lon)
         {
             bail!("longitude {lon} is not between -180 and 180");
+        }
+        if let Some(facing) = self.facing
+            && !(0.0..=360.0).contains(&facing)
+        {
+            bail!("facing {facing} is not between 0 and 360");
         }
         for (name, fps) in [("fps_idle", self.fps_idle), ("fps_music", self.fps_music)] {
             if !(1..=60).contains(&fps) {
@@ -294,6 +315,7 @@ mod tests {
             "fps_music = 240",
             "latitude = 91",
             "longitude = \"west\"",
+            "facing = 400",
             "[palette]\nwood = \"brown\"",
             "[palette]\nwood = \"#12345\"",
             "[palette]\nglow_alpha = 1.5",
