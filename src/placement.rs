@@ -46,6 +46,8 @@ pub enum Edge {
 pub struct Taskbar {
     pub rect: Rect,
     pub edge: Edge,
+    /// Whether it slides out of sight until the pointer comes near it.
+    pub auto_hide: bool,
 }
 
 /// Why the sill is not drawn. Each is a layout v1 doesn't support, so the sill
@@ -60,6 +62,8 @@ pub enum Unplaced {
     Edge(Edge),
     /// The taskbar lives on a monitor other than the primary one.
     NotOnPrimary,
+    /// The taskbar auto-hides, so most of the time there is nothing to rest on.
+    AutoHide,
 }
 
 impl fmt::Display for Unplaced {
@@ -74,6 +78,7 @@ impl fmt::Display for Unplaced {
                 )
             }
             Unplaced::NotOnPrimary => write!(f, "the taskbar is not on the primary monitor"),
+            Unplaced::AutoHide => write!(f, "the taskbar auto-hides"),
         }
     }
 }
@@ -82,6 +87,9 @@ impl fmt::Display for Unplaced {
 /// tall, with its bottom edge touching the top of the taskbar.
 pub fn place(monitor: Rect, scale: f64, taskbar: Option<Taskbar>) -> Result<Rect, Unplaced> {
     let taskbar = taskbar.ok_or(Unplaced::NoTaskbar)?;
+    if taskbar.auto_hide {
+        return Err(Unplaced::AutoHide);
+    }
     if taskbar.edge != Edge::Bottom {
         return Err(Unplaced::Edge(taskbar.edge));
     }
@@ -122,6 +130,7 @@ mod tests {
         let taskbar = Taskbar {
             rect: rect(0, height - bar, width, height),
             edge: Edge::Bottom,
+            auto_hide: false,
         };
         (monitor, taskbar)
     }
@@ -150,6 +159,7 @@ mod tests {
         let taskbar = Taskbar {
             rect: rect(-2560, 1592, 0, 1640),
             edge: Edge::Bottom,
+            auto_hide: false,
         };
         assert_eq!(
             place(monitor, 1.0, Some(taskbar)),
@@ -166,7 +176,11 @@ mod tests {
             (Edge::Top, rect(0, 0, 1920, 48)),
         ];
         for (edge, bar) in cases {
-            let taskbar = Taskbar { rect: bar, edge };
+            let taskbar = Taskbar {
+                rect: bar,
+                edge,
+                auto_hide: false,
+            };
             assert_eq!(
                 place(monitor, 1.0, Some(taskbar)),
                 Err(Unplaced::Edge(edge))
@@ -180,6 +194,7 @@ mod tests {
         let taskbar = Taskbar {
             rect: rect(1920, 1032, 3840, 1080),
             edge: Edge::Bottom,
+            auto_hide: false,
         };
         assert_eq!(
             place(monitor, 1.0, Some(taskbar)),
@@ -191,5 +206,15 @@ mod tests {
     fn steps_aside_without_a_taskbar() {
         let (monitor, _) = desktop(1.0);
         assert_eq!(place(monitor, 1.0, None), Err(Unplaced::NoTaskbar));
+    }
+
+    #[test]
+    fn steps_aside_when_the_taskbar_auto_hides() {
+        let (monitor, taskbar) = desktop(1.0);
+        let taskbar = Taskbar {
+            auto_hide: true,
+            ..taskbar
+        };
+        assert_eq!(place(monitor, 1.0, Some(taskbar)), Err(Unplaced::AutoHide));
     }
 }

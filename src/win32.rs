@@ -16,9 +16,9 @@ use windows_sys::Win32::System::Time::{
     GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
 };
 use windows_sys::Win32::UI::Shell::{
-    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc,
-    QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, RemoveWindowSubclass,
-    SHAppBarMessage, SHQueryUserNotificationState, SetWindowSubclass,
+    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE,
+    APPBARDATA, DefSubclassProc, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    RemoveWindowSubclass, SHAppBarMessage, SHQueryUserNotificationState, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC, RegisterWindowMessageW,
@@ -89,8 +89,9 @@ pub fn ex_style(window: &Window) -> Option<u32> {
 }
 
 /// The taskbar's rectangle and edge from `SHAppBarMessage(ABM_GETTASKBARPOS)`,
-/// in physical pixels (winit makes the process per-monitor DPI aware), or `None`
-/// when the shell has no taskbar to report.
+/// in physical pixels (winit makes the process per-monitor DPI aware), and
+/// whether `ABM_GETSTATE` says it auto-hides, or `None` when the shell has no
+/// taskbar to report.
 pub fn taskbar() -> Option<Taskbar> {
     // SAFETY: APPBARDATA is plain data, and all-zero is a valid starting value.
     let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
@@ -107,6 +108,8 @@ pub fn taskbar() -> Option<Taskbar> {
         _ => return None,
     };
     let rc = data.rc;
+    // SAFETY: as above; ABM_GETSTATE only reads `cbSize`.
+    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) } as u32;
     Some(Taskbar {
         rect: Rect {
             left: rc.left,
@@ -115,6 +118,7 @@ pub fn taskbar() -> Option<Taskbar> {
             bottom: rc.bottom,
         },
         edge,
+        auto_hide: state & ABS_AUTOHIDE != 0,
     })
 }
 
