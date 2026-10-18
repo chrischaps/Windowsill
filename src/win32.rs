@@ -64,7 +64,8 @@ pub fn make_glass(window: &Window) -> anyhow::Result<()> {
             );
         }
         // A layered window stays invisible until it is given an alpha. Fully opaque
-        // here; per-pixel transparency is the job of the renderer (#4).
+        // here: the per-pixel alpha comes from the glass's composition visual,
+        // which this whole-window alpha leaves alone.
         if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
             anyhow::bail!(
                 "SetLayeredWindowAttributes failed: {}",
