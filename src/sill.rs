@@ -33,6 +33,10 @@ pub struct SillState {
     pub sunshine: f32,
     /// Which side the window's light comes from: -1 left, 0 ahead, 1 right.
     pub window_side: f32,
+    /// The colour of the room's light, which every lit thing is multiplied by.
+    pub ambient: [f32; 3],
+    /// How much of their own colour things keep in it, from 0 (grey) to 1.
+    pub vivid: f32,
 }
 
 impl Default for SillState {
@@ -46,6 +50,8 @@ impl Default for SillState {
             moonlight: 0.0,
             sunshine: 1.0,
             window_side: 0.0,
+            ambient: [1.0; 3],
+            vivid: 1.0,
         }
     }
 }
@@ -55,7 +61,8 @@ impl Default for SillState {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ease {
-    /// The beam, its colour, the shadows, the moonlight and the window.
+    /// The beam, its colour, the shadows, the moonlight, the window and the
+    /// room's light.
     pub light: f32,
     /// The candle catching and going out.
     pub candle: f32,
@@ -102,6 +109,7 @@ impl Sill {
     /// `dt`, as after the sill has been aside, simply arrives; no one was watching.
     pub fn step(&mut self, dt: f32, ease: &Ease) {
         let (s, t) = (&mut self.shown, &self.target);
+        let [r, g, b] = &mut s.ambient;
         for (value, target, tau) in [
             (&mut s.beam_angle, t.beam_angle, ease.light),
             (&mut s.colour_temperature, t.colour_temperature, ease.light),
@@ -109,9 +117,14 @@ impl Sill {
             (&mut s.moonlight, t.moonlight, ease.light),
             (&mut s.sunshine, t.sunshine, ease.light),
             (&mut s.window_side, t.window_side, ease.light),
+            (r, t.ambient[0], ease.light),
+            (g, t.ambient[1], ease.light),
+            (b, t.ambient[2], ease.light),
+            (&mut s.vivid, t.vivid, ease.light),
             (&mut s.candle, t.candle, ease.candle),
         ] {
-            *value += (target - *value) * (1.0 - (-dt / tau).exp());
+            // What is left of the gap, so a finished ease lands on the target exactly.
+            *value = target - (target - *value) * (-dt / tau).exp();
         }
     }
 }
@@ -131,6 +144,8 @@ mod tests {
                 moonlight: 1.0,
                 sunshine: 0.0,
                 window_side: 1.0,
+                ambient: [0.3, 0.4, 0.6],
+                vivid: 0.4,
             },
             ..Sill::default()
         }

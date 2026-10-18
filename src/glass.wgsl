@@ -25,6 +25,9 @@ struct Sill {
     // How much of the sun the room's window lets in, from 0 to 1, and which
     // side its light comes from, -1 left, 0 ahead, 1 right.
     room: vec4<f32>,
+    // The colour of the room's light at this hour, and in .w how much of their
+    // own colour things keep in it.
+    sky: vec4<f32>,
     // The candle's flame in .x, from 0 to 1.
     candle: vec4<f32>,
     // Where the plant, jar and candle stand, from 0 to 1 across, and in .w the
@@ -165,6 +168,15 @@ fn shadow(p: vec2<f32>, x: f32, half_width: f32, height: f32, lean: f32) -> f32 
     // Darkest at the foot, thinning toward the tip.
     let out = clamp((p.x - x) * sign(reach) / (abs(reach) + half_width), 0.0, 1.0);
     return (1.0 - smoothstep(-soft, soft, d)) * mix(1.0, 0.6, out);
+}
+
+// Something lit by the room at this hour (Fishbowl's palette): it takes on the
+// colour of the light, and loses some of its own as the light fails. Light
+// that makes itself, like the candle's flame, is left alone.
+fn graded(rgb: vec3<f32>) -> vec3<f32> {
+    let lit = rgb * sill.sky.rgb;
+    let grey = dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(vec3<f32>(grey), lit, sill.sky.w);
 }
 
 // ---- Drawing helpers ------------------------------------------------------
@@ -458,7 +470,7 @@ fn candle(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     let pillar = sd_box(p - vec2<f32>(0.0, BASE + 12.0), vec2<f32>(7.0, 12.0), 1.2);
     let drip = sd_segment(p, vec2<f32>(6.6, top - 1.0), vec2<f32>(6.7, top - 8.5)) - 1.1;
     let wax_shape = smin(pillar, drip, 1.6);
-    var wax = sill.wax.rgb * form(p.x / 7.0);
+    var wax = graded(sill.wax.rgb * form(p.x / 7.0));
     // Lit wax glows from inside near the flame.
     let inner = lit * exp(-(top - p.y) / 5.0);
     wax = mix(wax, sill.flame.rgb, inner * 0.35) * (1.0 + inner * 0.2);
@@ -470,7 +482,7 @@ fn candle(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     let wick_top = vec2<f32>(0.5, top + 3.5);
     let wick = sd_segment(p, vec2<f32>(0.0, top - 0.5), wick_top) - 0.45;
     let ember = lit * smoothstep(top + 1.5, top + 3.5, p.y);
-    colour = over(colour, mix(vec3<f32>(0.12, 0.09, 0.07), sill.flame.rgb * 1.2, ember), cover(wick));
+    colour = over(colour, mix(graded(vec3<f32>(0.12, 0.09, 0.07)), sill.flame.rgb * 1.2, ember), cover(wick));
 
     // The flame: a teardrop that grows as the candle catches, a pale core and a
     // touch of blue at its foot.
@@ -536,6 +548,8 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     if abs(p.x - x.y) < 16.0 {
         colour = jar(colour, p - vec2<f32>(x.y, 0.0));
     }
+    // All of it so far is lit by the room. The candle grades its own wax.
+    colour = vec4<f32>(graded(colour.rgb), colour.a);
     if abs(p.x - x.z) < 60.0 {
         colour = candle(colour, p - vec2<f32>(x.z, 0.0));
     }
