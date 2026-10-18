@@ -15,6 +15,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 notify = "8"
+cpal = "0.18"
+ringbuf = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation", "Win32_Foundation"] }

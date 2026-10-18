@@ -10,8 +10,10 @@
 //! `windowsill.toml` says. Its colours and frame rate come from that file too,
 //! re-read on every save.
 //! `--day-in 60s` runs a whole day in a minute, to check how it looks.
+//! It listens to whatever the PC is playing.
 
 mod args;
+mod audio;
 mod clock;
 mod config;
 mod glass;
@@ -41,6 +43,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use args::Args;
+use audio::capture::LoopbackCapture;
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
@@ -247,6 +250,8 @@ struct App {
     /// When the sill began, for the candle's flicker.
     born: Instant,
     next_frame: Instant,
+    /// What the PC is playing, reopened whenever the output device changes.
+    hearing: LoopbackCapture,
 }
 
 impl App {
@@ -306,6 +311,7 @@ impl App {
             hour_seen: None,
             born: Instant::now(),
             next_frame: Instant::now(),
+            hearing: LoopbackCapture::new(audio::analysis::spawn_analysis()),
         }
     }
 
@@ -641,6 +647,7 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.hearing.poll();
         // Windows is only asked while the config leaves the place open.
         if self.config.place().is_none() && self.whereabouts.due(SystemTime::now()) {
             self.whereabouts.ask(SystemTime::now(), self.proxy.clone());
