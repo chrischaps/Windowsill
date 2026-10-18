@@ -36,6 +36,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use triple_buffer::Output;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
@@ -44,6 +45,7 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use args::Args;
 use audio::capture::LoopbackCapture;
+use audio::features::AudioFeatures;
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
@@ -252,6 +254,10 @@ struct App {
     next_frame: Instant,
     /// What the PC is playing, reopened whenever the output device changes.
     hearing: LoopbackCapture,
+    /// What the music is doing, as the analysis thread last heard it.
+    // Nothing reads it until the motes (#16) and the plant and jar (#17).
+    #[allow(dead_code)]
+    music: Output<AudioFeatures>,
 }
 
 impl App {
@@ -289,6 +295,7 @@ impl App {
         }
         // Nothing is on show yet, so the sill starts in the light it should be in.
         let sill = Sill::at(sunlight(&config, here, SillState::default(), world));
+        let (music, sink) = audio::analysis::spawn_analysis();
         Self {
             proxy,
             args,
@@ -311,7 +318,8 @@ impl App {
             hour_seen: None,
             born: Instant::now(),
             next_frame: Instant::now(),
-            hearing: LoopbackCapture::new(audio::analysis::spawn_analysis()),
+            hearing: LoopbackCapture::new(sink),
+            music,
         }
     }
 
