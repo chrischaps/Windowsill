@@ -32,6 +32,9 @@ struct Sill {
     // The candle's flame in .x, from 0 to 1, how much of it is left in .y,
     // and in .zw how its flame breathes: height and sway, each -1 to 1.
     candle: vec4<f32>,
+    // How stirred the dust in the air is by the music, from 0 to 1, and in .y
+    // how far through its cycle it has drifted, from 0 to 1.
+    dust: vec4<f32>,
     // Where the plant, jar and candle stand, from 0 to 1 across, and in .w the
     // strip's width in physical pixels.
     places: vec4<f32>,
@@ -544,6 +547,65 @@ fn candlelight(colour: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(colour.rgb * (1.0 + warm * 2.6) + warm * 0.06 * colour.a, colour.a);
 }
 
+// ---- The dust -------------------------------------------------------------
+//
+// While music plays, a few dozen motes drift in the light. Each lives in a cell
+// of a grid that rises slowly through the air, wandering about the middle of
+// its cell, and turns as it goes so it catches the light and loses it. How far
+// the grid has risen, how far each mote has wandered and how far it has
+// turned are all whole cycles of `sill.dust.y`, and the grid repeats after
+// DUST_TILE cells, so the dust comes round to where it began without a jump.
+// In silence `sill.dust.y` stands still and the motes fade where they are.
+
+const DUST_CELL: f32 = 28.0;
+const DUST_TILE: vec2<f32> = vec2<f32>(256.0, 128.0);
+
+// How much of a mote covers `p`, from 0 to 1, and how much light it catches.
+fn motes(p: vec2<f32>) -> f32 {
+    let cycle = sill.dust.y;
+    let q = p - vec2<f32>(0.0, cycle * DUST_TILE.y * DUST_CELL);
+    let cell = floor(q / DUST_CELL);
+    let id = cell - DUST_TILE * floor(cell / DUST_TILE);
+    // Not every cell has one.
+    if hash(id) > 0.6 {
+        return 0.0;
+    }
+    let a = hash(id + vec2<f32>(31.7, 11.3));
+    let b = hash(id + vec2<f32>(5.1, 47.9));
+    let c = hash(id + vec2<f32>(73.4, 2.6));
+    // Each wanders on its own slow path, and never out of its cell.
+    let turns = floor(vec2<f32>(28.0, 34.0) + vec2<f32>(a, b) * 30.0);
+    let wander = sin(6.2831853 * (turns * cycle + vec2<f32>(b, c))) * 5.5;
+    let centre = (cell + 0.3 + 0.4 * vec2<f32>(a, b)) * DUST_CELL + wander;
+    // A speck no finer than a physical pixel, so it shows at any DPI.
+    let r = max(0.6 + 0.7 * c, 0.8 / sill.scale);
+    let d = length(q - centre) / r;
+    let turn = 0.55 + 0.45 * sin(6.2831853 * (floor(14.0 + c * 16.0) * cycle + a));
+    return exp(-d * d) * turn;
+}
+
+// The dust over the air behind the things on the sill. `air` is how opaque the
+// air was before they were drawn, so whatever covers a mote hides it, and
+// `beam` is how much sun is in the air at `p`.
+fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>, air: f32, beam: f32) -> vec4<f32> {
+    let stir = sill.dust.x;
+    if stir < 0.002 || p.y < LEDGE {
+        return colour;
+    }
+    // It shows in the sun's light, and in the candle's close around its flame.
+    let flame = vec2<f32>(x.z + 0.5, BASE + 24.0 * sill.candle.y + 6.0);
+    let near = length(p - flame);
+    let by_candle = sill.candle.x * 0.8 * exp(-near * near / (2.0 * 34.0 * 34.0));
+    let light = beam + by_candle;
+    if light < 0.004 {
+        return colour;
+    }
+    let seen = 1.0 - clamp((colour.a - air) / max(1.0 - air, 1e-3), 0.0, 1.0);
+    let rgb = (graded(sunlight()) * beam + sill.flame.rgb * by_candle) / light;
+    let a = motes(p) * min(light * 3.5, 1.0) * smoothstep(0.0, 0.35, stir) * 0.95 * seen;
+    return over(colour, rgb, a);
+}
+
 // ---- The whole sill -------------------------------------------------------
 
 @fragment
@@ -575,8 +637,10 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     let dust = 0.6 + 0.4 * noise(vec2<f32>(p.x * 0.012, p.y * 0.03));
     // Light scatters in the air, so the bars blur as the shafts rise.
     let between = 1.0 - 0.7 * bars(p.x + lean() * above * 0.6, 0.0, x.y, 8.0 + above * 0.5);
-    let shaft = shine() * between * rise * dust * 0.13 * step(LEDGE, p.y);
+    let beam = shine() * between * rise;
+    let shaft = beam * dust * 0.13 * step(LEDGE, p.y);
     colour = over(colour, sunlight(), shaft);
+    let air = colour.a;
 
     colour = ledge(colour, p, x);
     colour = contact(colour, p, x.x, 12.0);
@@ -595,6 +659,7 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     if abs(p.x - x.z) < 140.0 {
         colour = candlelight(colour, p - vec2<f32>(x.z, 0.0));
     }
+    colour = drifting(colour, p, x, air, beam);
     if abs(p.x - x.z) < 60.0 {
         colour = candle(colour, p - vec2<f32>(x.z, 0.0));
     }

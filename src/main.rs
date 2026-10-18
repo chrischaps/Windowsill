@@ -10,12 +10,14 @@
 //! `windowsill.toml` says. Its colours and frame rate come from that file too,
 //! re-read on every save.
 //! `--day-in 60s` runs a whole day in a minute, to check how it looks.
-//! It listens to whatever the PC is playing.
+//! It listens to whatever the PC is playing, and while music plays, dust drifts
+//! in the light on the beat.
 
 mod args;
 mod audio;
 mod clock;
 mod config;
+mod dust;
 mod glass;
 mod light;
 mod location;
@@ -255,9 +257,9 @@ struct App {
     /// What the PC is playing, reopened whenever the output device changes.
     hearing: LoopbackCapture,
     /// What the music is doing, as the analysis thread last heard it.
-    // Nothing reads it until the motes (#16) and the plant and jar (#17).
-    #[allow(dead_code)]
     music: Output<AudioFeatures>,
+    /// How far the dust in the beam has drifted.
+    drift: dust::Drift,
 }
 
 impl App {
@@ -320,6 +322,7 @@ impl App {
             next_frame: Instant::now(),
             hearing: LoopbackCapture::new(sink),
             music,
+            drift: dust::Drift::default(),
         }
     }
 
@@ -435,6 +438,7 @@ impl App {
                             &self.appearance.at(Instant::now()),
                             &self.sill.shown(),
                             [0.0; 2],
+                            self.drift.at(),
                         );
                     }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
@@ -635,10 +639,14 @@ impl ApplicationHandler<Wake> for App {
                         self.hour_seen = Some(hour);
                     }
                 }
-                self.sill.step(
-                    now.duration_since(self.eased).as_secs_f32() * self.clock.pace(),
-                    &self.config.ease,
-                );
+                let dt = now.duration_since(self.eased).as_secs_f32();
+                self.sill.step(dt * self.clock.pace(), &self.config.ease);
+                // The music keeps real time, whatever the sky's clock is doing.
+                let heard = *self.music.read();
+                self.sill.target.dust = dust::stir(heard.bass_att);
+                self.sill.hear(dt, &self.config.ease);
+                self.drift
+                    .advance(dt, self.sill.shown().dust, heard.beat_phase);
                 self.eased = now;
                 if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
                     glass.draw(
@@ -647,6 +655,7 @@ impl ApplicationHandler<Wake> for App {
                         &self.appearance.at(now),
                         &self.sill.shown(),
                         night::flicker(now.duration_since(self.born).as_secs_f64()),
+                        self.drift.at(),
                     );
                 }
             }
