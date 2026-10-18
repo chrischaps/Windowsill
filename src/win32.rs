@@ -6,19 +6,27 @@
 //! `WS_EX_LAYERED | WS_EX_TRANSPARENT` set across those rewrites, and the two bits
 //! winit doesn't know about are added here. Call [`make_glass`] again after any
 //! winit call that might change the window's flags.
+//!
+//! winit also doesn't pass on the broadcasts that say the desktop has changed
+//! shape, so [`watch_layout`] subclasses the window to hear them.
 
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::{
-    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage,
+    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc,
+    RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
-    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, RegisterWindowMessageW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes,
+    SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY,
+    WM_SETTINGCHANGE, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
+use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
+use crate::LayoutChanged;
 use crate::placement::{Edge, Rect, Taskbar};
 
 /// The extended styles the sill must always have.
@@ -102,4 +110,77 @@ pub fn taskbar() -> Option<Taskbar> {
         },
         edge,
     })
+}
+
+/// Our id among the window's subclasses. Any value works if it's ours alone.
+const LAYOUT_SUBCLASS: usize = 0x5111;
+
+/// What the subclass needs to hand a layout change back to the event loop.
+struct LayoutWatch {
+    proxy: EventLoopProxy<LayoutChanged>,
+    /// Explorer broadcasts this when it starts, so a restarted Explorer brings the sill back.
+    taskbar_created: u32,
+}
+
+/// Wakes the event loop with a [`LayoutChanged`] whenever the window hears that
+/// displays, DPI, the work area or the taskbar itself may have changed. The
+/// window is otherwise untouched: every message still goes on to winit.
+pub fn watch_layout(window: &Window, proxy: EventLoopProxy<LayoutChanged>) -> anyhow::Result<()> {
+    let hwnd =
+        hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
+    let name: Vec<u16> = "TaskbarCreated\0".encode_utf16().collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+    let taskbar_created = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+    let watch = Box::into_raw(Box::new(LayoutWatch {
+        proxy,
+        taskbar_created,
+    }));
+    // SAFETY: `hwnd` is live and owned by this thread. `watch` stays alive until
+    // the subclass frees it on WM_NCDESTROY, the last message the window gets.
+    if unsafe { SetWindowSubclass(hwnd, Some(layout_subclass), LAYOUT_SUBCLASS, watch as usize) }
+        == 0
+    {
+        // SAFETY: the subclass was not installed, so nothing else holds `watch`.
+        drop(unsafe { Box::from_raw(watch) });
+        anyhow::bail!(
+            "SetWindowSubclass failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn layout_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    let watch = data as *mut LayoutWatch;
+    if msg == WM_NCDESTROY {
+        // SAFETY: the window is going away, so this is the last time `watch` is
+        // seen; it came from `Box::into_raw` in `watch_layout`.
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(layout_subclass), LAYOUT_SUBCLASS);
+            drop(Box::from_raw(watch));
+        }
+    } else {
+        // SAFETY: `watch` lives until WM_NCDESTROY, handled above.
+        let watch = unsafe { &*watch };
+        let reason = match msg {
+            WM_DISPLAYCHANGE => Some("display change"),
+            WM_DPICHANGED => Some("DPI change"),
+            WM_SETTINGCHANGE => Some("settings change"),
+            _ if msg == watch.taskbar_created => Some("taskbar created"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            // Only fails once the loop has exited, when there is nothing to wake.
+            let _ = watch.proxy.send_event(LayoutChanged(reason));
+        }
+    }
+    // SAFETY: passes the message on to winit's own window procedure unchanged.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
