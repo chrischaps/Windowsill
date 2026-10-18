@@ -17,6 +17,8 @@
 //! When a fullscreen app, a game or a presentation comes up, it steps behind
 //! it, fades out and stops drawing until it is gone. While the screen is
 //! locked it does nothing at all: no drawing, no listening, no looking.
+//! Rest the pointer on the candle for a second and a tiny menu opens; it is
+//! the only thing the sill ever answers.
 
 mod args;
 mod audio;
@@ -24,8 +26,11 @@ mod clock;
 mod config;
 mod dust;
 mod glass;
+mod hold;
 mod light;
 mod location;
+#[cfg(windows)]
+mod menu;
 mod moon;
 mod night;
 mod objects;
@@ -59,6 +64,7 @@ use audio::features::AudioFeatures;
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
+use hold::{Choice, Hold};
 use location::Whereabouts;
 use pace::{Lag, Pace};
 use palette::Blend;
@@ -69,7 +75,9 @@ use sill::{Sill, SillState};
 use sun::Place;
 
 #[cfg(windows)]
-use win32::{covered, taskbar, utc_offset};
+use menu::open as open_menu;
+#[cfg(windows)]
+use win32::{covered, pointer, taskbar, utc_offset};
 
 /// Off Windows there is no taskbar to rest on, so the sill always steps aside.
 #[cfg(not(windows))]
@@ -81,6 +89,18 @@ fn taskbar() -> Option<placement::Taskbar> {
 #[cfg(not(windows))]
 fn covered() -> Option<&'static str> {
     None
+}
+
+/// Off Windows there is no pointer to watch.
+#[cfg(not(windows))]
+fn pointer() -> Option<hold::Pointer> {
+    None
+}
+
+/// Off Windows there is no menu, and nothing ever asks for one.
+#[cfg(not(windows))]
+fn open_menu(_x: i32, _y: i32, _proxy: EventLoopProxy<Wake>) -> anyhow::Result<()> {
+    Ok(())
 }
 
 /// Off Windows the local clock is taken to be UTC.
@@ -232,6 +252,8 @@ pub enum Wake {
     Unlocked,
     /// The music kicked. The payload is when the analysis thread heard it.
     Kick(Instant),
+    /// The candle's menu closed. The payload is what was chosen.
+    Menu(Choice),
 }
 
 /// Saved files waiting to be read again once the writing stops.
@@ -306,6 +328,8 @@ struct App {
     /// When the kick waiting to be drawn was heard.
     kick: Option<Instant>,
     lag: Lag,
+    /// Whether the pointer is resting on the candle.
+    hold: Hold,
 }
 
 impl App {
@@ -381,6 +405,7 @@ impl App {
             pace: Pace::default(),
             kick: None,
             lag: Lag::default(),
+            hold: Hold::default(),
         }
     }
 
@@ -659,6 +684,37 @@ impl App {
         }
     }
 
+    /// Looks at where the pointer is, and opens the candle's menu once it has
+    /// rested there long enough. Only while the sill is fully there and on top.
+    fn feel(&mut self) {
+        if self.hold.open() {
+            return;
+        }
+        let now = Instant::now();
+        let candle = match (self.resting, &self.window) {
+            (Resting::On(sill), Some(window))
+                if self.covered.is_none() && !self.lowered && self.presence.at(now) >= 1.0 =>
+            {
+                let scale = window.scale_factor();
+                let at = self.appearance.at(now).candle.at;
+                Some((hold::candle(sill, at, scale), hold::slack(scale)))
+            }
+            _ => None,
+        };
+        let pointer = candle.and_then(|_| pointer());
+        let (zone, slack) = candle.unzip();
+        if self.hold.sense(now, pointer, zone, slack.unwrap_or(0))
+            && let Some(zone) = zone
+        {
+            tracing::info!("the pointer rests on the candle; opening the menu");
+            let x = (zone.left + zone.right) / 2;
+            if let Err(err) = open_menu(x, zone.top, self.proxy.clone()) {
+                tracing::warn!("could not open the menu: {err:#}");
+                self.hold.closed();
+            }
+        }
+    }
+
     /// Looks again, and quits if the window can no longer be looked after.
     fn look(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(err) = self.rest(event_loop) {
@@ -744,6 +800,14 @@ impl ApplicationHandler<Wake> for App {
             // Drawn now rather than up to a frame later; the frame after it
             // follows a whole frame on, so kicks never add to the frame rate
             // by more than one each.
+            Wake::Menu(choice) => {
+                tracing::debug!("the menu closed: {choice:?}");
+                self.hold.closed();
+                if choice == Choice::Quit {
+                    tracing::info!("quitting, as the menu asked");
+                    event_loop.exit();
+                }
+            }
             Wake::Kick(heard) => {
                 if let (Resting::On(_), Some(window)) = (self.resting, &self.window) {
                     self.kick = Some(heard);
@@ -841,6 +905,8 @@ impl ApplicationHandler<Wake> for App {
         if self.settle.due(Instant::now()) {
             self.look(event_loop);
         }
+        // At the pace the sill already draws, so it costs no extra wakes.
+        self.feel();
         if let Some(pending) = self.pending
             && Instant::now() >= pending.at
         {

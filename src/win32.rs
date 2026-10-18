@@ -11,12 +11,15 @@
 //! shape, that the machine has woken from sleep, or that the screen has been
 //! locked, so [`watch_layout`] subclasses the window to hear them.
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
 use windows_sys::Win32::System::Time::{
     GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
 };
 use windows_sys::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE,
@@ -24,8 +27,8 @@ use windows_sys::Win32::UI::Shell::{
     RemoveWindowSubclass, SHAppBarMessage, SHQueryUserNotificationState, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC, RegisterWindowMessageW,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC,
+    RegisterWindowMessageW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED,
     WM_NCDESTROY, WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WS_EX_APPWINDOW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WTS_SESSION_LOCK,
@@ -36,6 +39,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 use crate::Wake;
+use crate::hold::Pointer;
 use crate::placement::{Edge, Rect, Taskbar};
 
 /// The extended styles the sill must always have.
@@ -140,6 +144,26 @@ pub fn covered() -> Option<&'static str> {
         QUNS_PRESENTATION_MODE => Some("a presentation"),
         _ => None,
     }
+}
+
+/// Where the mouse is and whether a button is down, or `None` when Windows
+/// won't say, as on the secure desktop.
+pub fn pointer() -> Option<Pointer> {
+    let mut at = POINT { x: 0, y: 0 };
+    // SAFETY: `at` is a POINT that outlives the call.
+    if unsafe { GetCursorPos(&mut at) } == 0 {
+        return None;
+    }
+    // The physical buttons, whichever way round they are swapped.
+    let pressed = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+        .into_iter()
+        // SAFETY: reading a key's state has no side effects.
+        .any(|key| unsafe { GetAsyncKeyState(i32::from(key)) } < 0);
+    Some(Pointer {
+        x: at.x,
+        y: at.y,
+        pressed,
+    })
 }
 
 /// What `GetTimeZoneInformation` returns while daylight saving time is on.
