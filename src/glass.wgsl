@@ -22,6 +22,9 @@ struct Sill {
     // The eased sill state: beam angle in degrees, colour temperature in
     // kelvin, shadow side from -1 to 1, and moonlight from 0 to 1 (not drawn yet).
     light: vec4<f32>,
+    // How much of the sun the room's window lets in, from 0 to 1, and which
+    // side its light comes from, -1 left, 0 ahead, 1 right.
+    room: vec4<f32>,
     // The candle's flame in .x, from 0 to 1.
     candle: vec4<f32>,
     // Where the plant, jar and candle stand, from 0 to 1 across, and in .w the
@@ -48,9 +51,13 @@ const BASE: f32 = 25.0;
 // How far apart the window's glazing bars are, and how wide each one is.
 const PANE: f32 = 380.0;
 const BAR: f32 = 6.0;
-// Which side the room's own light comes from, -1 left to 1 right. It models
-// the things on the sill whatever the sun is doing.
+// Which side the room's own light comes from, -1 left to 1 right, when the
+// window is straight ahead. It models the things on the sill whatever the sun
+// is doing.
 const ROOM: f32 = -0.45;
+// The sky's light through the window when the sun isn't coming in: soft and
+// a little cool.
+const SKY: vec3<f32> = vec3<f32>(0.86, 0.93, 1.0);
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -72,6 +79,9 @@ fn dither(pixel: vec2<f32>) -> f32 {
 // glows through the leaves and the water, and throws their shadows forward and
 // away from itself. The window's glazing bars stripe the board, and between
 // them the light shows faintly in the air.
+//
+// The sun only does that while the room's window lets it in. The rest of the
+// day the sky lights the board instead, softly and from the window's side.
 
 // How much sun reaches the sill, from 0 at night to 1. It fades through the
 // few degrees either side of the horizon.
@@ -79,9 +89,26 @@ fn sun() -> f32 {
     return smoothstep(-5.0, 2.0, sill.light.x);
 }
 
-// How strongly it shines where it does: a little softer when it is low.
+// How strongly it shines where it does: a little softer when it is low, and
+// not at all while it is round the side of the window.
 fn shine() -> f32 {
-    return sun() * (0.78 + 0.22 * sin(radians(clamp(sill.light.x, 0.0, 90.0))));
+    return sun() * sill.room.x * (0.78 + 0.22 * sin(radians(clamp(sill.light.x, 0.0, 90.0))));
+}
+
+// How much of the sky's light stands in for the sun while it isn't coming in.
+fn sky() -> f32 {
+    return smoothstep(-6.0, 4.0, sill.light.x) * (1.0 - sill.room.x);
+}
+
+// Which side the room's own light comes from, -1 left to 1 right: the
+// window's side, or ROOM when the window is straight ahead.
+fn room_side() -> f32 {
+    return mix(ROOM, sill.room.y * 0.6, min(abs(sill.room.y) * 3.0, 1.0));
+}
+
+// The same, settled to a whole side, for highlights that sit on one side.
+fn room_hand() -> f32 {
+    return clamp(room_side() * 4.0, -1.0, 1.0);
 }
 
 // Which side the sun is on, -1 left to 1 right: the side shadows fall away from.
@@ -126,11 +153,12 @@ fn bars(x: f32, back: f32, pane: f32, soft: f32) -> f32 {
     return 1.0 - smoothstep(BAR * 0.5 - soft * 0.5, BAR * 0.5 + soft, off);
 }
 
-// How much of the sun something standing at `x`, `half_width` across and
+// How much of the light something standing at `x`, `half_width` across and
 // `height` tall, keeps off the board's top at `p`. It falls forward, toward the
-// room, and sideways away from the sun, longer and softer the lower the sun.
-fn shadow(p: vec2<f32>, x: f32, half_width: f32, height: f32) -> f32 {
-    let reach = lean() * height * 0.5;
+// room, and sideways by `lean` for each pixel of height: longer and softer the
+// lower the light.
+fn shadow(p: vec2<f32>, x: f32, half_width: f32, height: f32, lean: f32) -> f32 {
+    let reach = lean * height * 0.5;
     let centre = vec2<f32>(x + reach * 0.5, BASE - 1.2);
     let d = sd_box(p - centre, vec2<f32>(half_width * 0.85 + abs(reach) * 0.5, 2.4), 2.0);
     let soft = 1.2 + min(abs(reach) * 0.03, 2.0);
@@ -157,7 +185,7 @@ fn over(under: vec4<f32>, rgb: vec3<f32>, a: f32) -> vec4<f32> {
 fn form(u: f32) -> vec3<f32> {
     let x = clamp(u, -1.0, 1.0);
     let normal = vec3<f32>(x, 0.0, sqrt(1.0 - x * x));
-    let room = normalize(vec3<f32>(ROOM, 0.0, 0.9));
+    let room = normalize(vec3<f32>(room_side(), 0.0, 0.9));
     let fill = 0.62 + 0.45 * max(dot(normal, room), 0.0);
     // Both edges at noon, with the sun straight behind; one edge as it swings.
     let edge = smoothstep(0.55, 1.0, abs(x)) * clamp(0.5 + 0.75 * sign(x) * sun_side() * 2.0, 0.0, 1.0);
@@ -272,10 +300,15 @@ fn ledge(under: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
     // The sun on it, striped by the glazing bars and shaded by what stands there.
     // The panes line up on the jar, so it always stands in the light.
     var shade = bars(p.x, LEDGE - p.y, x.y, 1.5 + (LEDGE - p.y) * 0.4);
-    shade = max(shade, shadow(p, x.x, 12.0, 46.0) * 0.9);
-    shade = max(shade, shadow(p, x.y, 11.0, 33.0) * 0.4);
-    shade = max(shade, shadow(p, x.z, 7.0, 24.0) * 0.8);
-    top *= 0.6 + sunlight() * shine() * 0.72 * (1.0 - shade);
+    shade = max(shade, shadow(p, x.x, 12.0, 46.0, lean()) * 0.9);
+    shade = max(shade, shadow(p, x.y, 11.0, 33.0, lean()) * 0.4);
+    shade = max(shade, shadow(p, x.z, 7.0, 24.0, lean()) * 0.8);
+    // The sky's light casts only faint, short shadows away from the window.
+    let away = -sill.room.y * 0.6;
+    var sky_shade = shadow(p, x.x, 12.0, 46.0, away) * 0.45;
+    sky_shade = max(sky_shade, shadow(p, x.y, 11.0, 33.0, away) * 0.25);
+    sky_shade = max(sky_shade, shadow(p, x.z, 7.0, 24.0, away) * 0.4);
+    top *= 0.6 + sunlight() * shine() * 0.72 * (1.0 - shade) + SKY * sky() * 0.36 * (1.0 - sky_shade);
     colour = over(colour, top, cover(p.y - LEDGE));
 
     // The front face, a touch darker toward the bottom, with a lighter lip
@@ -348,7 +381,7 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
         var green = mix(dark, sill.leaf.rgb, smoothstep(0.0, 0.75, t));
         // Lit on the sun's side of the midrib, with the rib itself catching
         // light, and the sun glowing through the leaf from behind.
-        green *= 1.0 + 0.12 * sign(side) * sign(ROOM);
+        green *= 1.0 + 0.12 * sign(side) * room_hand();
         green += sill.leaf.rgb * sunlight() * shine() * (0.16 + 0.1 * sign(side) * sun_side()) * t;
         let rib = (1.0 - smoothstep(0.0, 0.55, abs(side))) * step(0.06, t) * (1.0 - t);
         green = mix(green, sill.leaf.rgb * 1.3, rib * 0.45);
@@ -396,12 +429,12 @@ fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 
     // The glass itself shows mostly at its edges.
     let wall = abs(glass + 0.7) - 0.7;
-    let edge_light = mix(0.75, 1.1, 0.5 + 0.5 * sign(p.x) * sign(ROOM));
+    let edge_light = mix(0.75, 1.1, 0.5 + 0.5 * sign(p.x) * room_hand());
     let edge_sun = sunlight() * shine() * 0.35 * smoothstep(0.0, 1.0, sign(p.x) * sun_side() * 2.0 + 0.5);
     colour = over(colour, glass_rgb * edge_light + edge_sun, cover(wall) * 0.5);
 
     // A long highlight down the lit side, and a small one on the shoulder.
-    let side = sign(ROOM);
+    let side = room_hand();
     let streak = sd_segment(p, vec2<f32>(side * 6.8, BASE + 6.0), vec2<f32>(side * 6.8, BASE + 19.0)) - 0.75;
     colour = over(colour, mix(glass_rgb, vec3<f32>(1.0), 0.6), cover(streak) * 0.55);
     let glint = length(p - vec2<f32>(side * 4.0, BASE + 23.2)) - 0.9;

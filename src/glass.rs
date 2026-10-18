@@ -97,6 +97,8 @@ struct Uniforms {
     grain: [f32; 4],
     /// Beam angle, colour temperature, shadow side and moonlight.
     light: [f32; 4],
+    /// How much sun the window lets in, and which side its light comes from.
+    room: [f32; 4],
     /// The candle's flame in `.x`.
     candle: [f32; 4],
     /// Where the plant, jar and candle stand, from 0 to 1 across, and the
@@ -276,6 +278,7 @@ impl Glass {
                 sill.shadow_side,
                 sill.moonlight,
             ],
+            room: [sill.sunshine, sill.window_side, 0.0, 0.0],
             candle: [sill.candle, 0.0, 0.0, 0.0],
             places: [
                 look.plant.at,

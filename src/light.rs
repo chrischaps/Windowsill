@@ -1,11 +1,17 @@
 //! What the real sun does to the sill: how high the beam comes in, what colour
 //! it is, and which way the shadows fall.
 //!
-//! The sill is in a window that faces the way you do when you look at the
-//! screen. Unless told otherwise it faces the equator, the side the sun spends
-//! its day on. From the north that is south, so the morning sun comes in from
-//! the left and shadows fall to the right. In the afternoon they swap.
-//! From the south it is the mirror image.
+//! The sill sits in the light of a room. You face one way to look at the
+//! screen, and the room's window looks out another. The sun only shines in
+//! while it is in front of that window; the rest of the day the light is the
+//! sky's, softer and from the window's side. So the sill never argues with
+//! the light falling on the desk around it.
+//!
+//! Told nothing about the room, the sill is its own window: you face the
+//! equator, the side the sun spends its day on, and the sun comes in from
+//! whichever side it is on. From the north that is south, so the morning sun
+//! comes in from the left and shadows fall to the right. In the afternoon they
+//! swap. From the south it is the mirror image.
 
 use crate::sill::SillState;
 use crate::sun::Sun;
@@ -35,23 +41,57 @@ pub fn toward_the_equator(latitude: f64) -> f64 {
     if latitude >= 0.0 { 180.0 } else { 0.0 }
 }
 
-/// Which way shadows fall for a sun at `azimuth`, seen through a window that
-/// looks out toward `facing`: -1 to the left, 0 straight back, 1 to the right.
-pub fn shadow_side(facing: f64, azimuth: f64) -> f32 {
-    // Where the sun stands across the window, -1 at its left edge to 1 at its
-    // right. The shadow falls away from it.
-    let across = (azimuth - facing).to_radians().sin();
-    -across as f32
+/// Which ways things face in the room, in degrees clockwise from north.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Room {
+    /// The way you face when you look at the screen.
+    pub facing: f64,
+    /// The way the room's window looks out. Unknown means the sill is its own
+    /// window, straight ahead, and lets the sun in from either side.
+    pub window: Option<f64>,
 }
 
-/// `state` with its beam, colour and shadows set by the real sun, seen through
-/// a window that looks out toward `facing`.
-pub fn in_sunlight(state: SillState, facing: f64, sun: Sun) -> SillState {
+impl Room {
+    /// Where something at `bearing` is across your view: -1 on your left, 0
+    /// straight ahead or behind, 1 on your right.
+    fn across(&self, bearing: f64) -> f32 {
+        (bearing - self.facing).to_radians().sin() as f32
+    }
+
+    /// Which way shadows fall for a sun at `azimuth`: -1 to the left, 0
+    /// straight back, 1 to the right. They fall away from it.
+    pub fn shadow_side(&self, azimuth: f64) -> f32 {
+        -self.across(azimuth)
+    }
+
+    /// Which side the window's light comes from: -1 left, 0 ahead, 1 right.
+    pub fn window_side(&self) -> f32 {
+        self.window.map_or(0.0, |window| self.across(window))
+    }
+
+    /// How much of a sun at `azimuth` the window lets in, from 0 to 1. Only a
+    /// sun in front of the window shines through it, and one that has just
+    /// come round its edge only a little.
+    pub fn sunshine(&self, azimuth: f64) -> f32 {
+        let Some(window) = self.window else {
+            return 1.0;
+        };
+        let ahead = (azimuth - window).to_radians().cos() as f32;
+        let t = ((ahead + 0.05) / 0.35).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
+/// `state` with its beam, colour and shadows set by the real sun, as it falls
+/// in `room`.
+pub fn in_sunlight(state: SillState, room: Room, sun: Sun) -> SillState {
     let elevation = sun.elevation as f32;
     SillState {
         beam_angle: elevation.max(BELOW),
         colour_temperature: colour_temperature(elevation),
-        shadow_side: shadow_side(facing, sun.azimuth),
+        shadow_side: room.shadow_side(sun.azimuth),
+        sunshine: room.sunshine(sun.azimuth),
+        window_side: room.window_side(),
         ..state
     }
 }
@@ -60,9 +100,20 @@ pub fn in_sunlight(state: SillState, facing: f64, sun: Sun) -> SillState {
 mod tests {
     use super::*;
 
-    /// Looking out of a window in the north, and in the south.
-    const SEATTLE: f64 = 180.0;
-    const SYDNEY: f64 = 0.0;
+    /// The sill as its own window in the north, and in the south.
+    const SEATTLE: Room = Room {
+        facing: 180.0,
+        window: None,
+    };
+    const SYDNEY: Room = Room {
+        facing: 0.0,
+        window: None,
+    };
+    /// Facing north at a desk, with a window on the right looking east.
+    const DESK: Room = Room {
+        facing: 0.0,
+        window: Some(90.0),
+    };
 
     fn at(elevation: f64, azimuth: f64) -> Sun {
         Sun { elevation, azimuth }
@@ -94,19 +145,50 @@ mod tests {
 
     #[test]
     fn the_window_faces_the_equator_unless_told() {
-        assert_eq!(toward_the_equator(47.61), SEATTLE);
-        assert_eq!(toward_the_equator(-33.87), SYDNEY);
+        assert_eq!(toward_the_equator(47.61), SEATTLE.facing);
+        assert_eq!(toward_the_equator(-33.87), SYDNEY.facing);
     }
 
     #[test]
     fn looking_north_from_the_north_mirrors_looking_south() {
         // Facing north, the east is on the right, so the morning sun comes
         // from the right and shadows fall to the left.
-        let morning = in_sunlight(SillState::default(), 0.0, at(15.0, 110.0));
+        let room = Room {
+            facing: 0.0,
+            window: None,
+        };
+        let morning = in_sunlight(SillState::default(), room, at(15.0, 110.0));
         assert!(morning.shadow_side < -0.5, "{morning:?}");
-        // Facing east, the noon sun in the south is on the right.
-        let noon = in_sunlight(SillState::default(), 90.0, at(40.0, 180.0));
-        assert!(noon.shadow_side < -0.9, "{noon:?}");
+    }
+
+    #[test]
+    fn an_east_window_lets_the_morning_sun_in_and_not_the_afternoon() {
+        let morning = in_sunlight(SillState::default(), DESK, at(15.0, 110.0));
+        let afternoon = in_sunlight(SillState::default(), DESK, at(30.0, 220.0));
+        assert_eq!(morning.sunshine, 1.0);
+        assert_eq!(afternoon.sunshine, 0.0);
+        // The window's light comes from the right all day, and so does the
+        // morning sun, so shadows fall to the left.
+        assert_eq!(morning.window_side, 1.0);
+        assert_eq!(afternoon.window_side, 1.0);
+        assert!(morning.shadow_side < -0.9, "{morning:?}");
+    }
+
+    #[test]
+    fn the_sun_fades_in_as_it_comes_round_the_window_edge() {
+        let mut last = 0.0;
+        for azimuth in (150..=200).rev().step_by(5) {
+            let sunshine = DESK.sunshine(azimuth as f64);
+            assert!(sunshine >= last, "{azimuth}: {sunshine} after {last}");
+            last = sunshine;
+        }
+        assert!(DESK.sunshine(185.0) == 0.0 && DESK.sunshine(150.0) == 1.0);
+    }
+
+    #[test]
+    fn with_no_window_the_sill_lets_the_sun_in_from_anywhere() {
+        let dawn = in_sunlight(SillState::default(), SEATTLE, at(1.0, 60.0));
+        assert_eq!((dawn.sunshine, dawn.window_side), (1.0, 0.0));
     }
 
     #[test]

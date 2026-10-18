@@ -15,7 +15,7 @@ use serde::Deserialize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
-use crate::light;
+use crate::light::{self, Room};
 use crate::objects::{Candle, Jar, Plant};
 use crate::palette::{Look, Palette};
 use crate::sill::{self, Ease};
@@ -34,9 +34,12 @@ pub struct Config {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     /// The way you face when you look at the screen, in degrees clockwise from
-    /// north. The sill's window looks out that way. Unknown means toward the
-    /// equator, the side the sun is on.
+    /// north. Unknown means toward the equator, the side the sun is on.
     pub facing: Option<f64>,
+    /// The way the room's window looks out, in degrees clockwise from north.
+    /// The sun only shines in through it. Unknown means the sill is its own
+    /// window, straight ahead.
+    pub window: Option<f64>,
     /// Frames per second while the room is quiet.
     pub fps_idle: u32,
     /// Frames per second while music plays (from M3).
@@ -57,6 +60,7 @@ impl Default for Config {
             latitude: None,
             longitude: None,
             facing: None,
+            window: None,
             fps_idle: 15,
             fps_music: 30,
             palette: Palette::default(),
@@ -77,14 +81,15 @@ impl Config {
         })
     }
 
-    /// The way the sill's window looks out, in degrees clockwise from north,
-    /// once it is known where it is.
-    pub fn facing(&self) -> Option<f64> {
+    /// Which ways you and the window face, once it is known where the sill is.
+    pub fn room(&self) -> Option<Room> {
         let place = self.place()?;
-        Some(
-            self.facing
+        Some(Room {
+            facing: self
+                .facing
                 .unwrap_or_else(|| light::toward_the_equator(place.latitude)),
-        )
+            window: self.window,
+        })
     }
 
     /// How the sill looks, for the renderer to ease toward.
@@ -124,10 +129,12 @@ impl Config {
         {
             bail!("longitude {lon} is not between -180 and 180");
         }
-        if let Some(facing) = self.facing
-            && !(0.0..=360.0).contains(&facing)
-        {
-            bail!("facing {facing} is not between 0 and 360");
+        for (name, bearing) in [("facing", self.facing), ("window", self.window)] {
+            if let Some(bearing) = bearing
+                && !(0.0..=360.0).contains(&bearing)
+            {
+                bail!("{name} {bearing} is not between 0 and 360");
+            }
         }
         for (name, fps) in [("fps_idle", self.fps_idle), ("fps_music", self.fps_music)] {
             if !(1..=60).contains(&fps) {
@@ -316,6 +323,7 @@ mod tests {
             "latitude = 91",
             "longitude = \"west\"",
             "facing = 400",
+            "window = -90",
             "[palette]\nwood = \"brown\"",
             "[palette]\nwood = \"#12345\"",
             "[palette]\nglow_alpha = 1.5",
