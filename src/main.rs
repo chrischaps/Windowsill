@@ -7,7 +7,10 @@
 //! candle on it in the light of the real sun, under glass that fades upward to
 //! clear, and eases in over a few seconds when it comes to rest.
 //! Its colours and frame rate come from `windowsill.toml`, re-read on every save.
+//! `--day-in 60s` runs a whole day in a minute, to check how it looks.
 
+mod args;
+mod clock;
 mod config;
 mod glass;
 mod light;
@@ -34,6 +37,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
+use args::Args;
+use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
 use palette::Blend;
@@ -43,7 +48,7 @@ use settle::Settle;
 use sill::{Sill, SillState};
 
 #[cfg(windows)]
-use win32::taskbar;
+use win32::{taskbar, utc_offset};
 
 /// Off Windows there is no taskbar to rest on, so the sill always steps aside.
 #[cfg(not(windows))]
@@ -51,20 +56,26 @@ fn taskbar() -> Option<placement::Taskbar> {
     None
 }
 
+/// Off Windows the local clock is taken to be UTC.
+#[cfg(not(windows))]
+fn utc_offset() -> Option<i64> {
+    None
+}
+
 /// How long to wait after a save for the editor to finish writing the file.
 const QUIET: Duration = Duration::from_millis(150);
 
-/// How often to look at the sun again. It moves a quarter of a degree a minute,
-/// and the ease smooths each step, so this is plenty.
+/// How often to look at the sun again, in the world's time. It moves a quarter
+/// of a degree a minute, and the ease smooths each step, so this is plenty.
+/// Sped up, it comes round every frame.
 const SUN_EVERY: Duration = Duration::from_secs(20);
 
 /// Where the light on the sill should be heading now: the sun's, the moon's
 /// and the candle's. With no place set it is plain daylight, and the candle
 /// waits unlit.
-fn sunlight(config: &Config, state: SillState) -> SillState {
+fn sunlight(config: &Config, state: SillState, now: SystemTime) -> SillState {
     match config.place().zip(config.room()) {
         Some((place, room)) => {
-            let now = SystemTime::now();
             let sun = sun::position(place, now);
             let moon = moon::position(place, now);
             let shade = config.sky.at(sun);
@@ -79,13 +90,12 @@ fn sunlight(config: &Config, state: SillState) -> SillState {
     }
 }
 
-/// Says where the sun is now, or that the sill doesn't know where it is.
-fn note_the_sun(config: &Config) {
+/// Says where the sun is at `now`, or that the sill doesn't know where it is.
+fn note_the_sun(config: &Config, now: SystemTime) {
     let Some(place) = config.place() else {
         tracing::info!("no latitude and longitude set; the sill shows plain daylight");
         return;
     };
-    let now = SystemTime::now();
     let sun = sun::position(place, now);
     let day = match sun::day(place, now) {
         sun::Day::Rises { rise, set } => {
@@ -110,6 +120,56 @@ fn note_the_sun(config: &Config) {
         moon.azimuth,
         moon.lit * 100.0
     );
+}
+
+/// A line on the hour while the day is sped up, so the log can be read
+/// against the sill.
+fn note_the_hour(config: &Config, hour: u32, now: SystemTime) {
+    let Some(place) = config.place() else {
+        return;
+    };
+    let sun = sun::position(place, now);
+    let moon = moon::position(place, now);
+    let candle = night::candle(place, now);
+    tracing::info!(
+        "{hour:02}:00  sun {:5.1}°  moon {:5.1}° {:3.0}% lit  candle {}",
+        sun.elevation,
+        moon.elevation,
+        moon.lit * 100.0,
+        if candle.lit {
+            format!("lit, {:.0}% left", candle.wax * 100.0)
+        } else {
+            "out".into()
+        }
+    );
+}
+
+/// The config with the command line's place, if it gave one, in place of its own.
+fn placed(mut config: Config, args: &Args) -> Config {
+    if let (Some(latitude), Some(longitude)) = (args.latitude, args.longitude) {
+        config.latitude = Some(latitude);
+        config.longitude = Some(longitude);
+    }
+    config
+}
+
+/// The clock the command line asked for: sped up, stopped, or the real one.
+fn clock(args: &Args, offset: i64) -> Clock {
+    let now = SystemTime::now();
+    let start = args.at.map_or(now, |(hours, minutes)| {
+        clock::today_at(now, offset, hours, minutes)
+    });
+    match (args.day_in, args.at) {
+        (Some(span), _) => {
+            tracing::info!("a whole day every {span:?}");
+            Clock::day_in(start, span)
+        }
+        (None, Some((hours, minutes))) => {
+            tracing::info!("the clock is held at {hours:02}:{minutes:02}");
+            Clock::stopped(start)
+        }
+        (None, None) => Clock::real(),
+    }
 }
 
 /// `at` as a span of time before or after `now`, e.g. "in 3h 05m".
@@ -155,6 +215,11 @@ enum Resting {
 struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<Wake>,
+    args: Args,
+    /// The world's time: the real clock unless the command line changed it.
+    clock: Clock,
+    /// How far the local clock is ahead of UTC, in seconds.
+    offset: i64,
     config_path: PathBuf,
     shader_path: Option<PathBuf>,
     config: Config,
@@ -168,26 +233,38 @@ struct App {
     sill: Sill,
     /// When the sill was last eased, so each frame eases by the time it took.
     eased: Instant,
-    /// When the sun was last looked at.
-    sun_seen: Instant,
+    /// When, in the world's time, the sun was last looked at.
+    sun_seen: SystemTime,
+    /// The last hour noted while the day is sped up.
+    hour_seen: Option<u32>,
     /// When the sill began, for the candle's flicker.
     born: Instant,
     next_frame: Instant,
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<Wake>) -> Self {
+    fn new(proxy: EventLoopProxy<Wake>, args: Args) -> Self {
         let config_path = config::locate();
         tracing::info!("config: {}", config_path.display());
         let config = Config::load(&config_path).unwrap_or_else(|err| {
             tracing::error!("{err:#}; using the defaults until it is fixed");
             Config::default()
         });
-        note_the_sun(&config);
+        let config = placed(config, &args);
+        let offset = utc_offset().unwrap_or_else(|| {
+            tracing::warn!("the local time zone is unknown; taking it to be UTC");
+            0
+        });
+        let clock = clock(&args, offset);
+        let world = clock.now(Instant::now());
+        note_the_sun(&config, world);
         // Nothing is on show yet, so the sill starts in the light it should be in.
-        let sill = Sill::at(sunlight(&config, SillState::default()));
+        let sill = Sill::at(sunlight(&config, SillState::default(), world));
         Self {
             proxy,
+            args,
+            clock,
+            offset,
             shader_path: config::shader_source(),
             appearance: Blend::new(config.look()),
             config,
@@ -200,7 +277,8 @@ impl App {
             presence: Presence::default(),
             sill,
             eased: Instant::now(),
-            sun_seen: Instant::now(),
+            sun_seen: world,
+            hour_seen: None,
             born: Instant::now(),
             next_frame: Instant::now(),
         }
@@ -353,15 +431,17 @@ impl App {
     /// that no longer makes sense.
     fn reload(&mut self, pending: Pending) {
         if pending.config {
-            match Config::load(&self.config_path) {
+            match Config::load(&self.config_path).map(|config| placed(config, &self.args)) {
                 Ok(config) if config == self.config => {}
                 Ok(config) => {
                     tracing::info!("config reloaded");
-                    self.appearance.toward(config.look(), Instant::now());
+                    let now = Instant::now();
+                    let world = self.clock.now(now);
+                    self.appearance.toward(config.look(), now);
                     if config.place() != self.config.place() {
-                        note_the_sun(&config);
+                        note_the_sun(&config, world);
                     }
-                    self.sill.target = sunlight(&config, self.sill.target);
+                    self.sill.target = sunlight(&config, self.sill.target, world);
                     self.config = config;
                 }
                 Err(err) => tracing::error!("{err:#}; keeping the last good config"),
@@ -457,12 +537,24 @@ impl ApplicationHandler<Wake> for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                if now.duration_since(self.sun_seen) >= SUN_EVERY {
-                    self.sill.target = sunlight(&self.config, self.sill.target);
-                    self.sun_seen = now;
+                let world = self.clock.now(now);
+                // A real clock set back counts as time to look again.
+                if world
+                    .duration_since(self.sun_seen)
+                    .map_or(true, |since| since >= SUN_EVERY)
+                {
+                    self.sill.target = sunlight(&self.config, self.sill.target, world);
+                    self.sun_seen = world;
+                }
+                if !self.clock.is_real() {
+                    let (hour, _) = clock::time_of_day(world, self.offset);
+                    if self.hour_seen != Some(hour) {
+                        note_the_hour(&self.config, hour, world);
+                        self.hour_seen = Some(hour);
+                    }
                 }
                 self.sill.step(
-                    now.duration_since(self.eased).as_secs_f32(),
+                    now.duration_since(self.eased).as_secs_f32() * self.clock.pace(),
                     &self.config.ease,
                 );
                 self.eased = now;
@@ -520,11 +612,18 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let args =
+        Args::parse(std::env::args().skip(1)).inspect_err(|_| eprintln!("{}", args::USAGE))?;
+    if args.help {
+        println!("{}", args::USAGE);
+        return Ok(());
+    }
+
     tracing::info!("Windowsill {}", env!("CARGO_PKG_VERSION"));
 
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(event_loop.create_proxy());
+    let mut app = App::new(event_loop.create_proxy(), args);
     // Without it the sill still runs; it just won't notice edits.
     let _watch = config::Watch::new(
         &app.config_path,
