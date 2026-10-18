@@ -28,6 +28,11 @@ pub struct SillState {
     pub candle: f32,
     /// How much of the light is the moon's, from 0 to 1.
     pub moonlight: f32,
+    /// How much of the sun the window lets in, from 0 (only the sky's light)
+    /// to 1.
+    pub sunshine: f32,
+    /// Which side the window's light comes from: -1 left, 0 ahead, 1 right.
+    pub window_side: f32,
 }
 
 impl Default for SillState {
@@ -39,6 +44,8 @@ impl Default for SillState {
             shadow_side: 0.0,
             candle: 0.0,
             moonlight: 0.0,
+            sunshine: 1.0,
+            window_side: 0.0,
         }
     }
 }
@@ -48,7 +55,7 @@ impl Default for SillState {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ease {
-    /// The beam, its colour, the shadows and the moonlight.
+    /// The beam, its colour, the shadows, the moonlight and the window.
     pub light: f32,
     /// The candle catching and going out.
     pub candle: f32,
@@ -78,6 +85,14 @@ pub struct Sill {
 }
 
 impl Sill {
+    /// A sill already showing `state`, with nothing to ease toward.
+    pub fn at(state: SillState) -> Self {
+        Self {
+            shown: state,
+            target: state,
+        }
+    }
+
     /// What to draw.
     pub fn shown(&self) -> SillState {
         self.shown
@@ -92,6 +107,8 @@ impl Sill {
             (&mut s.colour_temperature, t.colour_temperature, ease.light),
             (&mut s.shadow_side, t.shadow_side, ease.light),
             (&mut s.moonlight, t.moonlight, ease.light),
+            (&mut s.sunshine, t.sunshine, ease.light),
+            (&mut s.window_side, t.window_side, ease.light),
             (&mut s.candle, t.candle, ease.candle),
         ] {
             *value += (target - *value) * (1.0 - (-dt / tau).exp());
@@ -112,6 +129,8 @@ mod tests {
                 shadow_side: 1.0,
                 candle: 1.0,
                 moonlight: 1.0,
+                sunshine: 0.0,
+                window_side: 1.0,
             },
             ..Sill::default()
         }

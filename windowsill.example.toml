@@ -9,6 +9,15 @@
 # latitude = 47.61
 # longitude = -122.33
 
+# The way you face when you look at the screen, and the way the room's window
+# looks out, in degrees clockwise from north (0 north, 90 east, 180 south,
+# 270 west). The sill's light then agrees with the light on your desk: the sun
+# only shines in while it is in front of the window, and the rest of the day the
+# sky's softer light comes from the window's side. Left out, you face the
+# equator and the sill is its own window, letting the sun in from either side.
+# facing = 0
+# window = 90
+
 # Frames per second while the room is quiet, and while music plays.
 fps_idle = 15
 fps_music = 30
