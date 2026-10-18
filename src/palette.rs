@@ -1,4 +1,5 @@
-//! The ledge's colours, and the ease from one set to the next when they change.
+//! The ledge's colours, and the ease from one look to the next when the config
+//! changes them or moves the things on the sill.
 //!
 //! Colours are kept as the shader writes them: non-linear 0..1 values, the same
 //! numbers a `"#rrggbb"` in the config file names.
@@ -7,9 +8,22 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Deserializer, de};
 
-/// How long a new palette takes to replace the old one. Long enough that a
-/// saved edit never snaps; short enough to tune by eye.
-const BLEND: Duration = Duration::from_secs(1);
+use crate::objects::{Candle, Jar, Plant};
+
+/// How long a new look takes to replace the old one. Long enough that a saved
+/// edit never snaps (design rule 1); short enough to tune by eye.
+const BLEND: Duration = Duration::from_secs(2);
+
+/// Something that can be eased part of the way toward another of itself.
+pub trait Mix {
+    fn mix(&self, other: &Self, t: f32) -> Self;
+}
+
+impl Mix for f32 {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        self + (other - self) * t
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Colour(pub [f32; 3]);
@@ -19,16 +33,16 @@ impl Colour {
         Self([r, g, b])
     }
 
-    fn mix(self, other: Self, t: f32) -> Self {
-        Self(std::array::from_fn(|i| {
-            self.0[i] + (other.0[i] - self.0[i]) * t
-        }))
-    }
-
     /// For the shader, which wants `vec4` alignment.
     pub fn padded(self) -> [f32; 4] {
         let [r, g, b] = self.0;
         [r, g, b, 1.0]
+    }
+}
+
+impl Mix for Colour {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self(std::array::from_fn(|i| self.0[i].mix(&other.0[i], t)))
     }
 }
 
@@ -60,8 +74,10 @@ pub struct Palette {
     pub wood: Colour,
     /// The face toward its bottom edge, a little in shadow.
     pub wood_shade: Colour,
-    /// The thin top edge that catches the light.
+    /// The thin front edge that catches the light, and the board's top.
     pub lip: Colour,
+    /// The darker lines of the grain running along the board.
+    pub grain: Colour,
     /// The warmth on the glass just above the ledge, and how strong it starts.
     pub glow: Colour,
     pub glow_alpha: f32,
@@ -73,53 +89,80 @@ impl Default for Palette {
             wood: Colour::rgb(0.42, 0.27, 0.16),
             wood_shade: Colour::rgb(0.33, 0.20, 0.12),
             lip: Colour::rgb(0.58, 0.40, 0.26),
+            grain: Colour::rgb(0.27, 0.16, 0.09),
             glow: Colour::rgb(0.50, 0.34, 0.22),
             glow_alpha: 0.42,
         }
     }
 }
 
-impl Palette {
+impl Mix for Palette {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
-            wood: self.wood.mix(other.wood, t),
-            wood_shade: self.wood_shade.mix(other.wood_shade, t),
-            lip: self.lip.mix(other.lip, t),
-            glow: self.glow.mix(other.glow, t),
-            glow_alpha: self.glow_alpha + (other.glow_alpha - self.glow_alpha) * t,
+            wood: self.wood.mix(&other.wood, t),
+            wood_shade: self.wood_shade.mix(&other.wood_shade, t),
+            lip: self.lip.mix(&other.lip, t),
+            grain: self.grain.mix(&other.grain, t),
+            glow: self.glow.mix(&other.glow, t),
+            glow_alpha: self.glow_alpha.mix(&other.glow_alpha, t),
         }
     }
 }
 
-/// The palette on show, easing toward the most recently asked-for one.
+/// Everything the config says about how the sill looks: the ledge's colours,
+/// and where each thing on it stands and what colour it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Look {
+    pub palette: Palette,
+    pub plant: Plant,
+    pub jar: Jar,
+    pub candle: Candle,
+}
+
+impl Mix for Look {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            palette: self.palette.mix(&other.palette, t),
+            plant: self.plant.mix(&other.plant, t),
+            jar: self.jar.mix(&other.jar, t),
+            candle: self.candle.mix(&other.candle, t),
+        }
+    }
+}
+
+/// The look on show, easing toward the most recently asked-for one.
 pub struct Blend {
-    from: Palette,
-    to: Palette,
+    from: Look,
+    to: Look,
     since: Instant,
 }
 
 impl Blend {
-    pub fn new(palette: Palette) -> Self {
+    pub fn new(look: Look) -> Self {
         Self {
-            from: palette,
-            to: palette,
+            from: look,
+            to: look,
             since: Instant::now() - BLEND,
         }
     }
 
-    /// Starts easing toward `palette` from whatever is on show at `now`, so a
+    /// Starts easing toward `look` from whatever is on show at `now`, so a
     /// second edit mid-ease carries on smoothly from where the first had got to.
-    pub fn toward(&mut self, palette: Palette, now: Instant) {
-        if palette != self.to {
+    pub fn toward(&mut self, look: Look, now: Instant) {
+        if look != self.to {
             self.from = self.at(now);
-            self.to = palette;
+            self.to = look;
             self.since = now;
         }
     }
 
-    pub fn at(&self, now: Instant) -> Palette {
+    pub fn at(&self, now: Instant) -> Look {
         let t = (now.saturating_duration_since(self.since).as_secs_f32() / BLEND.as_secs_f32())
             .min(1.0);
+        if t == 1.0 {
+            // Exactly, rather than to within a rounding error.
+            return self.to;
+        }
         self.from.mix(&self.to, t * t * (3.0 - 2.0 * t))
     }
 }
@@ -137,21 +180,32 @@ mod tests {
         }
     }
 
+    fn red() -> Look {
+        Look {
+            palette: Palette {
+                wood: Colour::rgb(1.0, 0.0, 0.0),
+                ..Palette::default()
+            },
+            candle: Candle {
+                at: 0.2,
+                ..Candle::default()
+            },
+            ..Look::default()
+        }
+    }
+
     #[test]
-    fn eases_to_a_new_palette_without_snapping() {
+    fn eases_to_a_new_look_without_snapping() {
         let start = Instant::now();
-        let mut blend = Blend::new(Palette::default());
-        let red = Palette {
-            wood: Colour::rgb(1.0, 0.0, 0.0),
-            ..Palette::default()
-        };
+        let mut blend = Blend::new(Look::default());
+        let red = red();
         blend.toward(red, start);
-        assert_eq!(blend.at(start), Palette::default());
-        let mut last = blend.at(start).wood.0[0];
-        for frame in 1..=15 {
+        assert_eq!(blend.at(start), Look::default());
+        let mut last = blend.at(start).palette.wood.0[0];
+        for frame in 1..=30 {
             let now = start + Duration::from_nanos(1_000_000_000 / 15 * frame);
-            let r = blend.at(now).wood.0[0];
-            assert!(r >= last && r - last < 0.1, "frame {frame}: {last} -> {r}");
+            let r = blend.at(now).palette.wood.0[0];
+            assert!(r >= last && r - last < 0.05, "frame {frame}: {last} -> {r}");
             last = r;
         }
         assert_eq!(blend.at(start + BLEND), red);
@@ -160,16 +214,13 @@ mod tests {
     #[test]
     fn a_second_edit_carries_on_from_where_the_first_got_to() {
         let start = Instant::now();
-        let mut blend = Blend::new(Palette::default());
-        let red = Palette {
-            wood: Colour::rgb(1.0, 0.0, 0.0),
-            ..Palette::default()
-        };
+        let mut blend = Blend::new(Look::default());
+        let red = red();
         blend.toward(red, start);
         let halfway = start + BLEND / 2;
         let shown = blend.at(halfway);
-        blend.toward(Palette::default(), halfway);
+        blend.toward(Look::default(), halfway);
         assert_eq!(blend.at(halfway), shown);
-        assert_eq!(blend.at(halfway + BLEND), Palette::default());
+        assert_eq!(blend.at(halfway + BLEND), Look::default());
     }
 }

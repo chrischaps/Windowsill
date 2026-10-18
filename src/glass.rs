@@ -17,7 +17,7 @@ use anyhow::{Context, anyhow};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::palette::Palette;
+use crate::palette::Look;
 use crate::sill::SillState;
 
 /// The shader the sill was built with, for when its source isn't on disk.
@@ -94,10 +94,20 @@ struct Uniforms {
     wood_shade: [f32; 4],
     lip: [f32; 4],
     glow: [f32; 4],
+    grain: [f32; 4],
     /// Beam angle, colour temperature, shadow side and moonlight.
     light: [f32; 4],
     /// The candle's flame in `.x`.
     candle: [f32; 4],
+    /// Where the plant, jar and candle stand, from 0 to 1 across, and the
+    /// strip's width in physical pixels.
+    places: [f32; 4],
+    pot: [f32; 4],
+    leaf: [f32; 4],
+    glass: [f32; 4],
+    water: [f32; 4],
+    wax: [f32; 4],
+    flame: [f32; 4],
 }
 
 impl Glass {
@@ -233,9 +243,9 @@ impl Glass {
     }
 
     /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
-    /// of the sill is there, from 0 to 1, `palette` the colours to draw it in,
-    /// and `sill` the light it is in.
-    pub fn draw(&mut self, scale: f64, presence: f32, palette: &Palette, sill: &SillState) {
+    /// of the sill is there, from 0 to 1, `look` its colours and where things
+    /// stand on it, and `sill` the light it is in.
+    pub fn draw(&mut self, scale: f64, presence: f32, look: &Look, sill: &SillState) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -249,6 +259,7 @@ impl Glass {
                 return;
             }
         };
+        let palette = &look.palette;
         let uniforms = Uniforms {
             height: self.config.height as f32,
             scale: scale as f32,
@@ -258,6 +269,7 @@ impl Glass {
             wood_shade: palette.wood_shade.padded(),
             lip: palette.lip.padded(),
             glow: palette.glow.padded(),
+            grain: palette.grain.padded(),
             light: [
                 sill.beam_angle,
                 sill.colour_temperature,
@@ -265,6 +277,18 @@ impl Glass {
                 sill.moonlight,
             ],
             candle: [sill.candle, 0.0, 0.0, 0.0],
+            places: [
+                look.plant.at,
+                look.jar.at,
+                look.candle.at,
+                self.config.width as f32,
+            ],
+            pot: look.plant.pot.padded(),
+            leaf: look.plant.leaf.padded(),
+            glass: look.jar.glass.padded(),
+            water: look.jar.water.padded(),
+            wax: look.candle.wax.padded(),
+            flame: look.candle.flame.padded(),
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
@@ -340,5 +364,42 @@ fn build_pipeline(
     match pollster::block_on(scope.pop()) {
         None => Ok(pipeline),
         Some(err) => Err(anyhow!("{err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module() -> naga::Module {
+        naga::front::wgsl::parse_str(SHADER)
+            .unwrap_or_else(|err| panic!("{}", err.emit_to_string(SHADER)))
+    }
+
+    #[test]
+    fn the_shader_is_valid() {
+        let module = module();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|err| panic!("{}", err.emit_to_string(SHADER)));
+    }
+
+    #[test]
+    fn the_uniforms_match_the_shader() {
+        let module = module();
+        let span = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { span, .. } if ty.name.as_deref() == Some("Sill") => {
+                    Some(*span)
+                }
+                _ => None,
+            })
+            .expect("the shader has no Sill");
+        assert_eq!(span as usize, size_of::<Uniforms>());
     }
 }

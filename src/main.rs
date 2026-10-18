@@ -10,6 +10,7 @@
 
 mod config;
 mod glass;
+mod objects;
 mod palette;
 mod placement;
 mod presence;
@@ -121,7 +122,7 @@ struct App {
     config_path: PathBuf,
     shader_path: Option<PathBuf>,
     config: Config,
-    palette: Blend,
+    appearance: Blend,
     pending: Option<Pending>,
     window: Option<Arc<Window>>,
     glass: Option<Glass>,
@@ -146,7 +147,7 @@ impl App {
         Self {
             proxy,
             shader_path: config::shader_source(),
-            palette: Blend::new(config.palette),
+            appearance: Blend::new(config.look()),
             config,
             config_path,
             pending: None,
@@ -239,7 +240,7 @@ impl App {
                         glass.draw(
                             window.scale_factor(),
                             0.0,
-                            &self.palette.at(Instant::now()),
+                            &self.appearance.at(Instant::now()),
                             &self.sill.shown(),
                         );
                     }
@@ -311,7 +312,7 @@ impl App {
                 Ok(config) if config == self.config => {}
                 Ok(config) => {
                     tracing::info!("config reloaded");
-                    self.palette.toward(config.palette, Instant::now());
+                    self.appearance.toward(config.look(), Instant::now());
                     if config.place() != self.config.place() {
                         note_the_sun(&config);
                     }
@@ -419,7 +420,7 @@ impl ApplicationHandler<Wake> for App {
                     glass.draw(
                         window.scale_factor(),
                         self.presence.at(now),
-                        &self.palette.at(now),
+                        &self.appearance.at(now),
                         &self.sill.shown(),
                     );
                 }
