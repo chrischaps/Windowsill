@@ -17,6 +17,7 @@ toml = "1"
 notify = "8"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation", "Win32_Foundation"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

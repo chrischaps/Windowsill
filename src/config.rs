@@ -86,15 +86,14 @@ impl Config {
         })
     }
 
-    /// Which ways you and the window face, once it is known where the sill is.
-    pub fn room(&self) -> Option<Room> {
-        let place = self.place()?;
-        Some(Room {
+    /// Which ways you and the window face, for a sill at `place`.
+    pub fn room(&self, place: Place) -> Room {
+        Room {
             facing: self
                 .facing
                 .unwrap_or_else(|| light::toward_the_equator(place.latitude)),
             window: self.window,
-        })
+        }
     }
 
     /// How the sill looks, for the renderer to ease toward.
@@ -185,10 +184,15 @@ pub fn locate() -> PathBuf {
     {
         return path.clone();
     }
-    match std::env::var_os("APPDATA") {
-        Some(appdata) => Path::new(&appdata).join("Windowsill").join(FILE_NAME),
+    match app_dir() {
+        Some(dir) => dir.join(FILE_NAME),
         None => beside_exe.unwrap_or_else(|| PathBuf::from(FILE_NAME)),
     }
+}
+
+/// `%APPDATA%\Windowsill`, whether or not it exists yet.
+pub fn app_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|appdata| Path::new(&appdata).join("Windowsill"))
 }
 
 /// The shader's source on disk, if it is there to be edited.

@@ -4,8 +4,9 @@
 # it whenever it is saved, and eases into the new look over two seconds.
 # If an edit doesn't make sense, the sill logs why and keeps the last good one.
 
-# Where the sill is in the world, for the sun and moon. Left out, the light is
-# plain daylight: the sill never guesses.
+# Where the sill is in the world, for the sun and moon. Left out, the sill asks
+# Windows' location service, and if that is off the light is plain daylight:
+# the sill never guesses. Set here, Windows is never asked.
 # latitude = 47.61
 # longitude = -122.33
 
