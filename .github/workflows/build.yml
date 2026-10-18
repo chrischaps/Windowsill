@@ -19,6 +19,6 @@ jobs:
       - run: cargo clippy --release -- -D warnings
       - run: cargo test --release
       # The runner has no GPU, so this draws on Windows' software renderer and
-      # the shader's cost lands on the CPU. The budget is about twice what the
-      # runner takes, so only a large regression fails it.
-      - run: cargo run --release -- --bench 300
+      # the shader's cost lands on the CPU: about 320 ms a frame on a 4-core
+      # runner. The budget is twice that, so only a large regression fails it.
+      - run: cargo run --release -- --bench 300 --budget 650

@@ -98,6 +98,11 @@ pub fn run(frames: u32, budget: Option<Duration>) -> anyhow::Result<()> {
             run.of_one_core() / threads as f64,
         );
     }
+    if adapter.device_type == wgpu::DeviceType::Cpu {
+        println!(
+            "  (drawn in software, so the shader's work is on the CPU too; a GPU costs far less)"
+        );
+    }
     if let Some(budget) = budget {
         let worst = idle.cpu.max(music.cpu);
         if worst > budget {
