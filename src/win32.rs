@@ -26,7 +26,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
-use crate::LayoutChanged;
+use crate::Wake;
 use crate::placement::{Edge, Rect, Taskbar};
 
 /// The extended styles the sill must always have.
@@ -118,15 +118,15 @@ const LAYOUT_SUBCLASS: usize = 0x5111;
 
 /// What the subclass needs to hand a layout change back to the event loop.
 struct LayoutWatch {
-    proxy: EventLoopProxy<LayoutChanged>,
+    proxy: EventLoopProxy<Wake>,
     /// Explorer broadcasts this when it starts, so a restarted Explorer brings the sill back.
     taskbar_created: u32,
 }
 
-/// Wakes the event loop with a [`LayoutChanged`] whenever the window hears that
+/// Wakes the event loop with a [`Wake::Layout`] whenever the window hears that
 /// displays, DPI, the work area or the taskbar itself may have changed. The
 /// window is otherwise untouched: every message still goes on to winit.
-pub fn watch_layout(window: &Window, proxy: EventLoopProxy<LayoutChanged>) -> anyhow::Result<()> {
+pub fn watch_layout(window: &Window, proxy: EventLoopProxy<Wake>) -> anyhow::Result<()> {
     let hwnd =
         hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
     let name: Vec<u16> = "TaskbarCreated\0".encode_utf16().collect();
@@ -179,7 +179,7 @@ unsafe extern "system" fn layout_subclass(
         };
         if let Some(reason) = reason {
             // Only fails once the loop has exited, when there is nothing to wake.
-            let _ = watch.proxy.send_event(LayoutChanged(reason));
+            let _ = watch.proxy.send_event(Wake::Layout(reason));
         }
     }
     // SAFETY: passes the message on to winit's own window procedure unchanged.

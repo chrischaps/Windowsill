@@ -1,0 +1,175 @@
+//! The ledge's colours, and the ease from one set to the next when they change.
+//!
+//! Colours are kept as the shader writes them: non-linear 0..1 values, the same
+//! numbers a `"#rrggbb"` in the config file names.
+
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Deserializer, de};
+
+/// How long a new palette takes to replace the old one. Long enough that a
+/// saved edit never snaps; short enough to tune by eye.
+const BLEND: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Colour(pub [f32; 3]);
+
+impl Colour {
+    pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
+        Self([r, g, b])
+    }
+
+    fn mix(self, other: Self, t: f32) -> Self {
+        Self(std::array::from_fn(|i| {
+            self.0[i] + (other.0[i] - self.0[i]) * t
+        }))
+    }
+
+    /// For the shader, which wants `vec4` alignment.
+    pub fn padded(self) -> [f32; 4] {
+        let [r, g, b] = self.0;
+        [r, g, b, 1.0]
+    }
+}
+
+impl std::str::FromStr for Colour {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let hex = text
+            .strip_prefix('#')
+            .filter(|hex| hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+            .ok_or_else(|| format!("{text:?} is not a colour like \"#6b4529\""))?;
+        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap() as f32 / 255.0;
+        Ok(Self::rgb(channel(0), channel(2), channel(4)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Colour {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Palette {
+    /// The ledge's face.
+    pub wood: Colour,
+    /// The face toward its bottom edge, a little in shadow.
+    pub wood_shade: Colour,
+    /// The thin top edge that catches the light.
+    pub lip: Colour,
+    /// The warmth on the glass just above the ledge, and how strong it starts.
+    pub glow: Colour,
+    pub glow_alpha: f32,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            wood: Colour::rgb(0.42, 0.27, 0.16),
+            wood_shade: Colour::rgb(0.33, 0.20, 0.12),
+            lip: Colour::rgb(0.58, 0.40, 0.26),
+            glow: Colour::rgb(0.50, 0.34, 0.22),
+            glow_alpha: 0.42,
+        }
+    }
+}
+
+impl Palette {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            wood: self.wood.mix(other.wood, t),
+            wood_shade: self.wood_shade.mix(other.wood_shade, t),
+            lip: self.lip.mix(other.lip, t),
+            glow: self.glow.mix(other.glow, t),
+            glow_alpha: self.glow_alpha + (other.glow_alpha - self.glow_alpha) * t,
+        }
+    }
+}
+
+/// The palette on show, easing toward the most recently asked-for one.
+pub struct Blend {
+    from: Palette,
+    to: Palette,
+    since: Instant,
+}
+
+impl Blend {
+    pub fn new(palette: Palette) -> Self {
+        Self {
+            from: palette,
+            to: palette,
+            since: Instant::now() - BLEND,
+        }
+    }
+
+    /// Starts easing toward `palette` from whatever is on show at `now`, so a
+    /// second edit mid-ease carries on smoothly from where the first had got to.
+    pub fn toward(&mut self, palette: Palette, now: Instant) {
+        if palette != self.to {
+            self.from = self.at(now);
+            self.to = palette;
+            self.since = now;
+        }
+    }
+
+    pub fn at(&self, now: Instant) -> Palette {
+        let t = (now.saturating_duration_since(self.since).as_secs_f32() / BLEND.as_secs_f32())
+            .min(1.0);
+        self.from.mix(&self.to, t * t * (3.0 - 2.0 * t))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_hex_colours() {
+        assert_eq!("#ff0080".parse(), Ok(Colour::rgb(1.0, 0.0, 128.0 / 255.0)));
+        assert_eq!("#FFFFFF".parse(), Ok(Colour::rgb(1.0, 1.0, 1.0)));
+        for bad in ["ff0080", "#ff008", "#ff00800", "#gg0080", "#ff00é"] {
+            assert!(bad.parse::<Colour>().is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn eases_to_a_new_palette_without_snapping() {
+        let start = Instant::now();
+        let mut blend = Blend::new(Palette::default());
+        let red = Palette {
+            wood: Colour::rgb(1.0, 0.0, 0.0),
+            ..Palette::default()
+        };
+        blend.toward(red, start);
+        assert_eq!(blend.at(start), Palette::default());
+        let mut last = blend.at(start).wood.0[0];
+        for frame in 1..=15 {
+            let now = start + Duration::from_nanos(1_000_000_000 / 15 * frame);
+            let r = blend.at(now).wood.0[0];
+            assert!(r >= last && r - last < 0.1, "frame {frame}: {last} -> {r}");
+            last = r;
+        }
+        assert_eq!(blend.at(start + BLEND), red);
+    }
+
+    #[test]
+    fn a_second_edit_carries_on_from_where_the_first_got_to() {
+        let start = Instant::now();
+        let mut blend = Blend::new(Palette::default());
+        let red = Palette {
+            wood: Colour::rgb(1.0, 0.0, 0.0),
+            ..Palette::default()
+        };
+        blend.toward(red, start);
+        let halfway = start + BLEND / 2;
+        let shown = blend.at(halfway);
+        blend.toward(Palette::default(), halfway);
+        assert_eq!(blend.at(halfway), shown);
+        assert_eq!(blend.at(halfway + BLEND), Palette::default());
+    }
+}

@@ -9,7 +9,13 @@ struct Sill {
     scale: f32,
     // 0 while the sill is away, easing to 1 as it settles in.
     presence: f32,
-    _pad: f32,
+    // How strong the warmth on the glass starts, just above the ledge.
+    glow_alpha: f32,
+    // The palette, from windowsill.toml. Only .rgb is used.
+    wood: vec4<f32>,
+    wood_shade: vec4<f32>,
+    lip_light: vec4<f32>,
+    glow: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> sill: Sill;
@@ -17,13 +23,6 @@ struct Sill {
 // Logical pixels, so the ledge is the same size at any DPI.
 const LEDGE: f32 = 30.0;
 const LIP: f32 = 1.5;
-
-const WOOD: vec3<f32> = vec3<f32>(0.42, 0.27, 0.16);
-const WOOD_SHADE: vec3<f32> = vec3<f32>(0.33, 0.20, 0.12);
-const LIP_LIGHT: vec3<f32> = vec3<f32>(0.58, 0.40, 0.26);
-// The warmth on the glass just above the ledge, and how strong it starts.
-const GLOW: vec3<f32> = vec3<f32>(0.50, 0.34, 0.22);
-const GLOW_ALPHA: f32 = 0.42;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -48,15 +47,15 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     // The glass above: warmth that falls away with a soft tail and is gone by the top.
     let fade_span = max(sill.height - ledge_top, 1.0);
     let t = clamp((up - ledge_top) / fade_span, 0.0, 1.0);
-    let glow_alpha = GLOW_ALPHA * pow(1.0 - t, 2.4);
-    var colour = vec4<f32>(GLOW * glow_alpha, glow_alpha);
+    let glow_alpha = sill.glow_alpha * pow(1.0 - t, 2.4);
+    var colour = vec4<f32>(sill.glow.rgb * glow_alpha, glow_alpha);
 
     // The ledge: a flat face, a touch darker toward the bottom, with a lighter
     // lip where its top edge catches the light.
     let depth = clamp(up / ledge_top, 0.0, 1.0);
-    var wood = mix(WOOD_SHADE, WOOD, smoothstep(0.0, 0.7, depth));
+    var wood = mix(sill.wood_shade.rgb, sill.wood.rgb, smoothstep(0.0, 0.7, depth));
     let lip_amount = smoothstep(ledge_top - lip, ledge_top - 0.5, up);
-    wood = mix(wood, LIP_LIGHT, lip_amount);
+    wood = mix(wood, sill.lip_light.rgb, lip_amount);
     // Coverage of the ledge's top edge within this pixel, for a clean line at any scale.
     let ledge = clamp(ledge_top - up + 0.5, 0.0, 1.0);
     colour = mix(colour, vec4<f32>(wood, 1.0), ledge);

@@ -13,9 +13,14 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+
+use crate::palette::Palette;
+
+/// The shader the sill was built with, for when its source isn't on disk.
+pub const SHADER: &str = include_str!("glass.wgsl");
 
 /// How the swapchain reaches the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +75,7 @@ pub struct Glass {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -82,11 +88,16 @@ struct Uniforms {
     height: f32,
     scale: f32,
     presence: f32,
-    _pad: f32,
+    glow_alpha: f32,
+    wood: [f32; 4],
+    wood_shade: [f32; 4],
+    lip: [f32; 4],
+    glow: [f32; 4],
 }
 
 impl Glass {
-    pub fn new(window: Arc<Window>, path: Path) -> anyhow::Result<Self> {
+    /// Opens the glass over `window`, drawn with the WGSL in `shader`.
+    pub fn new(window: Arc<Window>, path: Path, shader: &str) -> anyhow::Result<Self> {
         let size = window.inner_size();
         let instance = path.instance();
         let surface = instance
@@ -101,12 +112,11 @@ impl Glass {
         }))
         .with_context(|| format!("no GPU adapter for the {path:?} path"))?;
         let info = adapter.get_info();
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("windowsill"),
-                ..Default::default()
-            }))
-            .context("could not open the GPU device")?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("windowsill"),
+            ..Default::default()
+        }))
+        .context("could not open the GPU device")?;
 
         let caps = surface.get_capabilities(&adapter);
         tracing::info!(
@@ -122,7 +132,9 @@ impl Glass {
         {
             wgpu::CompositeAlphaMode::PreMultiplied
         } else {
-            tracing::warn!("the {path:?} path has no premultiplied alpha; the glass will be opaque");
+            tracing::warn!(
+                "the {path:?} path has no premultiplied alpha; the glass will be opaque"
+            );
             caps.alpha_modes[0]
         };
         // A plain (non-sRGB) format, so the shader's premultiplied colour is
@@ -147,32 +159,28 @@ impl Glass {
         };
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("glass.wgsl"));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("glass"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sill"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
         });
+        // Made by hand rather than taken from the pipeline, so a reloaded shader
+        // can reuse the same bind group.
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("glass"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = build_pipeline(&device, &layout, format, shader)
+            .context("the sill's shader would not build")?;
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sill"),
@@ -182,7 +190,7 @@ impl Glass {
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sill"),
-            layout: &pipeline.get_bind_group_layout(0),
+            layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniforms.as_entire_binding(),
@@ -194,6 +202,7 @@ impl Glass {
             device,
             queue,
             config,
+            layout,
             pipeline,
             uniforms,
             bind_group,
@@ -211,9 +220,16 @@ impl Glass {
         }
     }
 
-    /// Draws one frame. `scale` is the window's DPI scale, and `presence` how
-    /// much of the sill is there, from 0 to 1.
-    pub fn draw(&mut self, scale: f64, presence: f32) {
+    /// Swaps in a new shader. If it doesn't build, the old one stays and the
+    /// error says why.
+    pub fn reload(&mut self, shader: &str) -> anyhow::Result<()> {
+        self.pipeline = build_pipeline(&self.device, &self.layout, self.config.format, shader)?;
+        Ok(())
+    }
+
+    /// Draws one frame. `scale` is the window's DPI scale, `presence` how much
+    /// of the sill is there, from 0 to 1, and `palette` the colours to draw it in.
+    pub fn draw(&mut self, scale: f64, presence: f32, palette: &Palette) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -231,7 +247,11 @@ impl Glass {
             height: self.config.height as f32,
             scale: scale as f32,
             presence,
-            _pad: 0.0,
+            glow_alpha: palette.glow_alpha,
+            wood: palette.wood.padded(),
+            wood_shade: palette.wood_shade.padded(),
+            lip: palette.lip.padded(),
+            glow: palette.glow.padded(),
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
@@ -240,7 +260,9 @@ impl Glass {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("glass") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("glass"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("glass"),
@@ -261,5 +283,49 @@ impl Glass {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+    }
+}
+
+/// Builds the glass pipeline from WGSL. Mistakes in the shader come back as an
+/// error rather than wgpu's default of panicking.
+fn build_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    shader: &str,
+) -> anyhow::Result<wgpu::RenderPipeline> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("glass"),
+        source: wgpu::ShaderSource::Wgsl(shader.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("glass"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    match pollster::block_on(scope.pop()) {
+        None => Ok(pipeline),
+        Some(err) => Err(anyhow!("{err}")),
     }
 }
