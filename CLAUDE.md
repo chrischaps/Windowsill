@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo run --release
+cargo run --release -- --day-in 60s   # a whole day in a minute; --at 06:30 starts or holds a time
 cargo test
 cargo clippy -- -D warnings   # CI runs this
 RUST_LOG=windowsill=debug cargo run --release

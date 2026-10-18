@@ -19,6 +19,17 @@ Windows 10/11 only for now. It is built on Rust, winit, wgpu and (from M3) cpal,
 
 Copy [windowsill.example.toml](windowsill.example.toml) to `windowsill.toml` next to the exe, or to `%APPDATA%\Windowsill`, to set your location, frame rate and the ledge's colours. The sill re-reads it on every save. While the source is on disk, it also reloads `src/glass.wgsl` on save, so the ledge can be tuned while it runs.
 
+## Checking a whole day
+
+```powershell
+cargo run --release -- --day-in 60s            # a whole day in a minute, from now
+cargo run --release -- --day-in 2m --at 04:00  # from before dawn
+cargo run --release -- --at 19:30              # held at dusk
+cargo run --release -- --lat <deg> --lon <deg> # somewhere else's sky
+```
+
+Only the sky's clock is changed. The ease speeds up with it, so a sped-up day looks like a real one, only shorter. The candle's flicker keeps real time. While sped up, the log notes the sun, moon and candle on every hour.
+
 ## Privacy
 
 From M3, Windowsill listens to the audio your PC plays, through WASAPI loopback. The analysis stays in memory: nothing is recorded, saved or sent anywhere.

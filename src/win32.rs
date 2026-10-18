@@ -11,6 +11,9 @@
 //! shape, so [`watch_layout`] subclasses the window to hear them.
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::Time::{
+    GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+};
 use windows_sys::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc,
     RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
@@ -111,6 +114,29 @@ pub fn taskbar() -> Option<Taskbar> {
         },
         edge,
     })
+}
+
+/// What `GetTimeZoneInformation` returns while daylight saving time is on.
+const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
+/// How far the local clock is ahead of UTC right now, in seconds, or `None`
+/// if Windows won't say.
+pub fn utc_offset() -> Option<i64> {
+    // SAFETY: TIME_ZONE_INFORMATION is plain data, and all-zero is a valid starting value.
+    let mut zone: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `zone` is a TIME_ZONE_INFORMATION that outlives the call.
+    let id = unsafe { GetTimeZoneInformation(&mut zone) };
+    if id == TIME_ZONE_ID_INVALID {
+        return None;
+    }
+    // The bias is what to add to local time to get UTC, in minutes.
+    let bias = zone.Bias
+        + if id == TIME_ZONE_ID_DAYLIGHT {
+            zone.DaylightBias
+        } else {
+            zone.StandardBias
+        };
+    Some(-i64::from(bias) * 60)
 }
 
 /// Our id among the window's subclasses. Any value works if it's ours alone.
