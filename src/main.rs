@@ -6,7 +6,9 @@
 //! the taskbar and Alt+Tab. It draws a wooden ledge with a plant, a jar and a
 //! candle on it in the light of the real sun, under glass that fades upward to
 //! clear, and eases in over a few seconds when it comes to rest.
-//! Its colours and frame rate come from `windowsill.toml`, re-read on every save.
+//! It learns where it is from Windows' location service, unless
+//! `windowsill.toml` says. Its colours and frame rate come from that file too,
+//! re-read on every save.
 //! `--day-in 60s` runs a whole day in a minute, to check how it looks.
 
 mod args;
@@ -14,6 +16,7 @@ mod clock;
 mod config;
 mod glass;
 mod light;
+mod location;
 mod moon;
 mod night;
 mod objects;
@@ -41,11 +44,13 @@ use args::Args;
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
+use location::Whereabouts;
 use palette::Blend;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
 use presence::Presence;
 use settle::Settle;
 use sill::{Sill, SillState};
+use sun::Place;
 
 #[cfg(windows)]
 use win32::{taskbar, utc_offset};
@@ -71,11 +76,12 @@ const QUIET: Duration = Duration::from_millis(150);
 const SUN_EVERY: Duration = Duration::from_secs(20);
 
 /// Where the light on the sill should be heading now: the sun's, the moon's
-/// and the candle's. With no place set it is plain daylight, and the candle
+/// and the candle's. With no place known it is plain daylight, and the candle
 /// waits unlit.
-fn sunlight(config: &Config, state: SillState, now: SystemTime) -> SillState {
-    match config.place().zip(config.room()) {
-        Some((place, room)) => {
+fn sunlight(config: &Config, place: Option<Place>, state: SillState, now: SystemTime) -> SillState {
+    match place {
+        Some(place) => {
+            let room = config.room(place);
             let sun = sun::position(place, now);
             let moon = moon::position(place, now);
             let shade = config.sky.at(sun);
@@ -90,12 +96,8 @@ fn sunlight(config: &Config, state: SillState, now: SystemTime) -> SillState {
     }
 }
 
-/// Says where the sun is at `now`, or that the sill doesn't know where it is.
-fn note_the_sun(config: &Config, now: SystemTime) {
-    let Some(place) = config.place() else {
-        tracing::info!("no latitude and longitude set; the sill shows plain daylight");
-        return;
-    };
+/// Says where the sun is at `now`, seen from `place`.
+fn note_the_sun(place: Place, now: SystemTime) {
     let sun = sun::position(place, now);
     let day = match sun::day(place, now) {
         sun::Day::Rises { rise, set } => {
@@ -124,8 +126,8 @@ fn note_the_sun(config: &Config, now: SystemTime) {
 
 /// A line on the hour while the day is sped up, so the log can be read
 /// against the sill.
-fn note_the_hour(config: &Config, hour: u32, now: SystemTime) {
-    let Some(place) = config.place() else {
+fn note_the_hour(place: Option<Place>, hour: u32, now: SystemTime) {
+    let Some(place) = place else {
         return;
     };
     let sun = sun::position(place, now);
@@ -188,12 +190,16 @@ fn from_now(at: SystemTime, now: SystemTime) -> String {
 }
 
 /// Why the event loop was woken from outside.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Wake {
     /// The desktop may have changed shape. The payload says what was heard.
     Layout(&'static str),
     /// A file the sill reads was saved.
     Edited(Edited),
+    /// Windows said where the sill is, or why it couldn't.
+    Located(location::Found),
+    /// The machine woke from sleep.
+    Woke,
 }
 
 /// Saved files waiting to be read again once the writing stops.
@@ -213,7 +219,6 @@ enum Resting {
 }
 
 struct App {
-    #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<Wake>,
     args: Args,
     /// The world's time: the real clock unless the command line changed it.
@@ -223,6 +228,8 @@ struct App {
     config_path: PathBuf,
     shader_path: Option<PathBuf>,
     config: Config,
+    /// Where Windows says the sill is, for when the config doesn't say.
+    whereabouts: Whereabouts,
     appearance: Blend,
     pending: Option<Pending>,
     window: Option<Arc<Window>>,
@@ -257,9 +264,26 @@ impl App {
         });
         let clock = clock(&args, offset);
         let world = clock.now(Instant::now());
-        note_the_sun(&config, world);
+        let whereabouts = if config.place().is_some() {
+            Whereabouts::default()
+        } else {
+            Whereabouts::remembered()
+        };
+        let here = config.place().or(whereabouts.place);
+        match (config.place(), here) {
+            (Some(_), _) => tracing::info!("the config says where the sill is"),
+            (None, Some(_)) => {
+                tracing::info!("starting from the last place Windows gave, and asking again")
+            }
+            (None, None) => {
+                tracing::info!("asking Windows where the sill is; plain daylight until it says")
+            }
+        }
+        if let Some(place) = here {
+            note_the_sun(place, world);
+        }
         // Nothing is on show yet, so the sill starts in the light it should be in.
-        let sill = Sill::at(sunlight(&config, SillState::default(), world));
+        let sill = Sill::at(sunlight(&config, here, SillState::default(), world));
         Self {
             proxy,
             args,
@@ -268,6 +292,7 @@ impl App {
             shader_path: config::shader_source(),
             appearance: Blend::new(config.look()),
             config,
+            whereabouts,
             config_path,
             pending: None,
             window: None,
@@ -281,6 +306,37 @@ impl App {
             hour_seen: None,
             born: Instant::now(),
             next_frame: Instant::now(),
+        }
+    }
+
+    /// Where the sill is in the world: where the config says, otherwise where
+    /// Windows last said, otherwise unknown.
+    fn here(&self) -> Option<Place> {
+        self.config.place().or(self.whereabouts.place)
+    }
+
+    /// Takes in what Windows said about where the sill is.
+    fn located(&mut self, found: location::Found) {
+        let heard = self.whereabouts.hear(found);
+        let overridden = self.config.place().is_some();
+        if let Some(why) = heard.news {
+            match (overridden, self.whereabouts.place) {
+                (true, _) => tracing::info!("{why}; the config says where the sill is anyway"),
+                (false, Some(_)) => tracing::info!("{why}; keeping the last place it gave"),
+                (false, None) => tracing::info!("{why}; the sill shows plain daylight"),
+            }
+        }
+        if heard.moved && !overridden {
+            let world = self.clock.now(Instant::now());
+            match self.whereabouts.place {
+                Some(place) => {
+                    tracing::info!("Windows says where the sill is");
+                    tracing::debug!("{:.2}, {:.2}", place.latitude, place.longitude);
+                    note_the_sun(place, world);
+                }
+                None => tracing::info!("the sill no longer knows where it is"),
+            }
+            self.sill.target = sunlight(&self.config, self.here(), self.sill.target, world);
         }
     }
 
@@ -438,11 +494,18 @@ impl App {
                     let now = Instant::now();
                     let world = self.clock.now(now);
                     self.appearance.toward(config.look(), now);
-                    if config.place() != self.config.place() {
-                        note_the_sun(&config, world);
-                    }
-                    self.sill.target = sunlight(&config, self.sill.target, world);
+                    let was = self.here();
                     self.config = config;
+                    let here = self.here();
+                    if here != was {
+                        match here {
+                            Some(place) => note_the_sun(place, world),
+                            None => tracing::info!(
+                                "no place is set; plain daylight until Windows says where the sill is"
+                            ),
+                        }
+                    }
+                    self.sill.target = sunlight(&self.config, here, self.sill.target, world);
                 }
                 Err(err) => tracing::error!("{err:#}; keeping the last good config"),
             }
@@ -523,6 +586,11 @@ impl ApplicationHandler<Wake> for App {
                 }
                 self.pending = Some(pending);
             }
+            Wake::Located(found) => self.located(found),
+            Wake::Woke => {
+                tracing::debug!("woke from sleep");
+                self.whereabouts.woke(SystemTime::now());
+            }
         }
     }
 
@@ -543,13 +611,13 @@ impl ApplicationHandler<Wake> for App {
                     .duration_since(self.sun_seen)
                     .map_or(true, |since| since >= SUN_EVERY)
                 {
-                    self.sill.target = sunlight(&self.config, self.sill.target, world);
+                    self.sill.target = sunlight(&self.config, self.here(), self.sill.target, world);
                     self.sun_seen = world;
                 }
                 if !self.clock.is_real() {
                     let (hour, _) = clock::time_of_day(world, self.offset);
                     if self.hour_seen != Some(hour) {
-                        note_the_hour(&self.config, hour, world);
+                        note_the_hour(self.here(), hour, world);
                         self.hour_seen = Some(hour);
                     }
                 }
@@ -573,6 +641,10 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Windows is only asked while the config leaves the place open.
+        if self.config.place().is_none() && self.whereabouts.due(SystemTime::now()) {
+            self.whereabouts.ask(SystemTime::now(), self.proxy.clone());
+        }
         if self.settle.due(Instant::now()) {
             self.look(event_loop);
         }

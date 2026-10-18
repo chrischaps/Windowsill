@@ -8,7 +8,8 @@
 //! winit call that might change the window's flags.
 //!
 //! winit also doesn't pass on the broadcasts that say the desktop has changed
-//! shape, so [`watch_layout`] subclasses the window to hear them.
+//! shape, or that the machine has woken from sleep, so [`watch_layout`]
+//! subclasses the window to hear them.
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Time::{
@@ -19,11 +20,11 @@ use windows_sys::Win32::UI::Shell::{
     RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, RegisterWindowMessageW, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes,
-    SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY,
-    WM_SETTINGCHANGE, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
+    GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, PBT_APMRESUMEAUTOMATIC, RegisterWindowMessageW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_NCDESTROY, WM_POWERBROADCAST, WM_SETTINGCHANGE, WS_EX_APPWINDOW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -150,7 +151,8 @@ struct LayoutWatch {
 }
 
 /// Wakes the event loop with a [`Wake::Layout`] whenever the window hears that
-/// displays, DPI, the work area or the taskbar itself may have changed. The
+/// displays, DPI, the work area or the taskbar itself may have changed, and
+/// with a [`Wake::Woke`] when the machine wakes from sleep. The
 /// window is otherwise untouched: every message still goes on to winit.
 pub fn watch_layout(window: &Window, proxy: EventLoopProxy<Wake>) -> anyhow::Result<()> {
     let hwnd =
@@ -196,16 +198,17 @@ unsafe extern "system" fn layout_subclass(
     } else {
         // SAFETY: `watch` lives until WM_NCDESTROY, handled above.
         let watch = unsafe { &*watch };
-        let reason = match msg {
-            WM_DISPLAYCHANGE => Some("display change"),
-            WM_DPICHANGED => Some("DPI change"),
-            WM_SETTINGCHANGE => Some("settings change"),
-            _ if msg == watch.taskbar_created => Some("taskbar created"),
+        let wake = match msg {
+            WM_DISPLAYCHANGE => Some(Wake::Layout("display change")),
+            WM_DPICHANGED => Some(Wake::Layout("DPI change")),
+            WM_SETTINGCHANGE => Some(Wake::Layout("settings change")),
+            WM_POWERBROADCAST if wparam as u32 == PBT_APMRESUMEAUTOMATIC => Some(Wake::Woke),
+            _ if msg == watch.taskbar_created => Some(Wake::Layout("taskbar created")),
             _ => None,
         };
-        if let Some(reason) = reason {
+        if let Some(wake) = wake {
             // Only fails once the loop has exited, when there is nothing to wake.
-            let _ = watch.proxy.send_event(Wake::Layout(reason));
+            let _ = watch.proxy.send_event(wake);
         }
     }
     // SAFETY: passes the message on to winit's own window procedure unchanged.
