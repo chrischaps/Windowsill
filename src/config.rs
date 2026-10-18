@@ -16,6 +16,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
 use crate::palette::Palette;
+use crate::sill::{self, Ease};
 use crate::sun::Place;
 
 pub const FILE_NAME: &str = "windowsill.toml";
@@ -36,6 +37,8 @@ pub struct Config {
     pub fps_music: u32,
     /// The ledge's colours, as `"#rrggbb"` in the file.
     pub palette: Palette,
+    /// How slowly the sill follows a change, in seconds. Never under 2.
+    pub ease: Ease,
 }
 
 impl Default for Config {
@@ -46,6 +49,7 @@ impl Default for Config {
             fps_idle: 15,
             fps_music: 30,
             palette: Palette::default(),
+            ease: Ease::default(),
         }
     }
 }
@@ -89,6 +93,14 @@ impl Config {
         for (name, fps) in [("fps_idle", self.fps_idle), ("fps_music", self.fps_music)] {
             if !(1..=60).contains(&fps) {
                 bail!("{name} {fps} is not between 1 and 60");
+            }
+        }
+        for (name, tau) in self.ease.each() {
+            if !(tau >= sill::QUICKEST && tau.is_finite()) {
+                bail!(
+                    "ease.{name} {tau} is under {} seconds; nothing on the sill may move faster",
+                    sill::QUICKEST
+                );
             }
         }
         if !(0.0..=1.0).contains(&self.palette.glow_alpha) {
@@ -236,6 +248,7 @@ mod tests {
         assert!(near(e.lip, d.lip) && near(e.glow, d.glow));
         assert_eq!(e.glow_alpha, d.glow_alpha);
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
+        assert_eq!(example.ease, Ease::default());
     }
 
     #[test]
