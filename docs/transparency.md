@@ -6,7 +6,7 @@ The sill fades to fully see-through above the ledge, so the swapchain's alpha ha
 
 ## What each path did
 
-`WINDOWSILL_GLASS=visual|vulkan|hwnd` picks a path, so the comparison can be run again on other hardware. The test pane is a wood-coloured band that is opaque at the bottom and fades to nothing at the top (`src/glass.wgsl`).
+`WINDOWSILL_GLASS=visual|vulkan|hwnd` picks a path, so the comparison can be run again on other hardware. The spike measured a test pane: a wood-coloured band that was opaque at the bottom and faded to nothing at the top. Since #5 that band is the real ledge in `src/glass.wgsl`.
 
 | Path | Alpha modes the surface reports | Result | CPU (one core, 15 fps) | GPU 3D | Working set |
 | --- | --- | --- | --- | --- | --- |

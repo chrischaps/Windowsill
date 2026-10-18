@@ -71,6 +71,18 @@ pub struct Glass {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// What the shader needs to know about the strip; matches `Sill` in `glass.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    height: f32,
+    scale: f32,
+    presence: f32,
+    _pad: f32,
 }
 
 impl Glass {
@@ -162,12 +174,29 @@ impl Glass {
             cache: None,
         });
 
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sill"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sill"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            }],
+        });
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
             pipeline,
+            uniforms,
+            bind_group,
         })
     }
 
@@ -182,7 +211,9 @@ impl Glass {
         }
     }
 
-    pub fn draw(&mut self) {
+    /// Draws one frame. `scale` is the window's DPI scale, and `presence` how
+    /// much of the sill is there, from 0 to 1.
+    pub fn draw(&mut self, scale: f64, presence: f32) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -196,6 +227,14 @@ impl Glass {
                 return;
             }
         };
+        let uniforms = Uniforms {
+            height: self.config.height as f32,
+            scale: scale as f32,
+            presence,
+            _pad: 0.0,
+        };
+        self.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -217,6 +256,7 @@ impl Glass {
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);

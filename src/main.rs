@@ -4,11 +4,12 @@
 //! It rests on top of a bottom taskbar on the primary monitor and steps aside in
 //! any other layout. It follows the taskbar through display, DPI and monitor
 //! changes. Clicks fall through it, it never takes focus, and it stays out of
-//! the taskbar and Alt+Tab. For now it draws only a test band that fades to
-//! fully see-through, the proof that the glass works (#4).
+//! the taskbar and Alt+Tab. For now it draws a flat wooden ledge that fades
+//! upward into clear glass, and eases in over a few seconds when it comes to rest.
 
 mod glass;
 mod placement;
+mod presence;
 mod settle;
 #[cfg(windows)]
 mod win32;
@@ -24,6 +25,7 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use glass::Glass;
 use placement::{Rect, SILL_HEIGHT, Unplaced};
+use presence::Presence;
 use settle::Settle;
 
 #[cfg(windows)]
@@ -57,6 +59,7 @@ struct App {
     glass: Option<Glass>,
     resting: Resting,
     settle: Settle,
+    presence: Presence,
     next_frame: Instant,
 }
 
@@ -68,6 +71,7 @@ impl App {
             glass: None,
             resting: Resting::Unknown,
             settle: Settle::default(),
+            presence: Presence::default(),
             next_frame: Instant::now(),
         }
     }
@@ -144,14 +148,21 @@ impl App {
                     let _ = window.request_inner_size(size);
                 }
                 if !matches!(self.resting, Resting::On(_)) {
+                    // The swapchain still holds the last frame from before it
+                    // stepped aside; clear it so the sill eases in from nothing.
+                    if let Some(glass) = &mut self.glass {
+                        glass.draw(window.scale_factor(), 0.0);
+                    }
                     // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
                     window.set_visible(true);
+                    self.presence.arrive(Instant::now());
                 }
                 Resting::On(sill)
             }
             Err(why) => {
                 if matches!(self.resting, Resting::On(_)) {
                     window.set_visible(false);
+                    self.presence.leave();
                 }
                 Resting::Aside(why)
             }
@@ -234,8 +245,8 @@ impl ApplicationHandler<LayoutChanged> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(glass) = &mut self.glass {
-                    glass.draw();
+                if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
+                    glass.draw(window.scale_factor(), self.presence.at(Instant::now()));
                 }
             }
             _ => {}

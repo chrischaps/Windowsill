@@ -1,25 +1,69 @@
-// The spike's test pane: a warm band along the bottom that fades to nothing at
-// the top, so the desktop shows through it. Colours leave here premultiplied.
+// The M1 pane: a flat wooden ledge along the bottom of the strip, and above it
+// a faint warmth on the glass that fades to nothing before the top edge, so
+// the desktop shows through. Colours leave here premultiplied.
 
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    // 0 at the top edge of the strip, 1 at the bottom.
-    @location(0) down: f32,
+struct Sill {
+    // The strip's height in physical pixels.
+    height: f32,
+    // Physical pixels per logical pixel.
+    scale: f32,
+    // 0 while the sill is away, easing to 1 as it settles in.
+    presence: f32,
+    _pad: f32,
 }
 
+@group(0) @binding(0) var<uniform> sill: Sill;
+
+// Logical pixels, so the ledge is the same size at any DPI.
+const LEDGE: f32 = 30.0;
+const LIP: f32 = 1.5;
+
+const WOOD: vec3<f32> = vec3<f32>(0.42, 0.27, 0.16);
+const WOOD_SHADE: vec3<f32> = vec3<f32>(0.33, 0.20, 0.12);
+const LIP_LIGHT: vec3<f32> = vec3<f32>(0.58, 0.40, 0.26);
+// The warmth on the glass just above the ledge, and how strong it starts.
+const GLOW: vec3<f32> = vec3<f32>(0.50, 0.34, 0.22);
+const GLOW_ALPHA: f32 = 0.42;
+
 @vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     // One triangle that covers the whole strip.
     let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    var out: VertexOut;
-    out.position = vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
-    out.down = 1.0 - corner.y;
-    return out;
+    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+
+// Interleaved gradient noise (Jimenez 2014): a cheap, even dither that keeps an
+// 8-bit fade from breaking into bands.
+fn dither(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715)))) - 0.5;
 }
 
 @fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let wood = vec3<f32>(0.42, 0.27, 0.16);
-    let alpha = smoothstep(0.0, 1.0, in.down);
-    return vec4<f32>(wood * alpha, alpha);
+fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
+    // Physical pixels up from the bottom edge, and the ledge's top in the same units.
+    let up = sill.height - pixel.y;
+    let ledge_top = LEDGE * sill.scale;
+    let lip = LIP * sill.scale;
+
+    // The glass above: warmth that falls away with a soft tail and is gone by the top.
+    let fade_span = max(sill.height - ledge_top, 1.0);
+    let t = clamp((up - ledge_top) / fade_span, 0.0, 1.0);
+    let glow_alpha = GLOW_ALPHA * pow(1.0 - t, 2.4);
+    var colour = vec4<f32>(GLOW * glow_alpha, glow_alpha);
+
+    // The ledge: a flat face, a touch darker toward the bottom, with a lighter
+    // lip where its top edge catches the light.
+    let depth = clamp(up / ledge_top, 0.0, 1.0);
+    var wood = mix(WOOD_SHADE, WOOD, smoothstep(0.0, 0.7, depth));
+    let lip_amount = smoothstep(ledge_top - lip, ledge_top - 0.5, up);
+    wood = mix(wood, LIP_LIGHT, lip_amount);
+    // Coverage of the ledge's top edge within this pixel, for a clean line at any scale.
+    let ledge = clamp(ledge_top - up + 0.5, 0.0, 1.0);
+    colour = mix(colour, vec4<f32>(wood, 1.0), ledge);
+
+    colour *= sill.presence;
+    // Dither colour and alpha together so the colour stays premultiplied.
+    let n = dither(pixel.xy) / 255.0;
+    let a = clamp(colour.a + n, 0.0, 1.0);
+    return vec4<f32>(clamp(colour.rgb + vec3<f32>(n), vec3<f32>(0.0), vec3<f32>(a)), a);
 }
