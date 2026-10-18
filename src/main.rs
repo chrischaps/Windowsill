@@ -14,6 +14,8 @@
 //! in the light on the beat, the plant's leaves lean to the bass and the jar
 //! rings with light now and then on a kick. It draws at 15 fps, and at 30
 //! while music plays, with each kick drawn the moment it is heard.
+//! When a fullscreen app, a game or a presentation comes up, it steps behind
+//! it, fades out and stops drawing until it is gone.
 
 mod args;
 mod audio;
@@ -66,11 +68,17 @@ use sill::{Sill, SillState};
 use sun::Place;
 
 #[cfg(windows)]
-use win32::{taskbar, utc_offset};
+use win32::{covered, taskbar, utc_offset};
 
 /// Off Windows there is no taskbar to rest on, so the sill always steps aside.
 #[cfg(not(windows))]
 fn taskbar() -> Option<placement::Taskbar> {
+    None
+}
+
+/// Off Windows nothing fullscreen is ever looked for.
+#[cfg(not(windows))]
+fn covered() -> Option<&'static str> {
     None
 }
 
@@ -82,6 +90,10 @@ fn utc_offset() -> Option<i64> {
 
 /// How long to wait after a save for the editor to finish writing the file.
 const QUIET: Duration = Duration::from_millis(150);
+
+/// How often to ask Windows whether something fullscreen has come up. The
+/// sill fades over seconds, so a second's wait is never seen.
+const COVER_EVERY: Duration = Duration::from_secs(1);
 
 /// How often to look at the sun again, in the world's time. It moves a quarter
 /// of a degree a minute, and the ease smooths each step, so this is plenty.
@@ -231,6 +243,8 @@ enum Resting {
     Unknown,
     On(Rect),
     Aside(Unplaced),
+    /// Faded out behind something fullscreen; the payload says what.
+    Covered(&'static str),
 }
 
 struct App {
@@ -252,6 +266,12 @@ struct App {
     resting: Resting,
     settle: Settle,
     presence: Presence,
+    /// What fullscreen thing is in front of the sill, if any.
+    covered: Option<&'static str>,
+    /// When Windows was last asked about [`App::covered`].
+    covered_seen: Instant,
+    /// Whether the window has stepped behind the others while it fades out.
+    lowered: bool,
     sill: Sill,
     /// When the sill was last eased, so each frame eases by the time it took.
     eased: Instant,
@@ -334,6 +354,9 @@ impl App {
             resting: Resting::Unknown,
             settle: Settle::default(),
             presence: Presence::default(),
+            covered: covered(),
+            covered_seen: Instant::now(),
+            lowered: false,
             sill,
             eased: Instant::now(),
             sun_seen: world,
@@ -433,14 +456,36 @@ impl App {
         Ok(window)
     }
 
+    /// Shows the window, easing in from nothing.
+    fn show(&mut self, window: &Window) {
+        // The swapchain still holds the last frame from before it stepped
+        // aside; clear it so the sill eases in from nothing.
+        let answers = self.answers();
+        if let Some(glass) = &mut self.glass {
+            glass.draw(
+                window.scale_factor(),
+                0.0,
+                &self.appearance.at(Instant::now()),
+                &self.sill.shown(),
+                [0.0; 2],
+                answers,
+            );
+        }
+        // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
+        window.set_visible(true);
+        self.presence.arrive(Instant::now());
+    }
+
     /// Looks at the desktop and puts the sill where it belongs: resting on the
-    /// taskbar, or hidden when there is nowhere it can rest. It is cheap enough to
+    /// taskbar, or hidden when there is nowhere it can rest or something
+    /// fullscreen has come in front of it. It is cheap enough to
     /// call whenever anything might have changed, and it only touches the window
     /// when the answer differs from what the window already is.
     fn rest(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let Some(window) = &self.window else {
+        let Some(window) = self.window.clone() else {
             return Ok(());
         };
+        let window = &window;
         let now = match Self::place(event_loop) {
             Ok(sill) => {
                 let size = PhysicalSize::new(sill.width() as u32, sill.height() as u32);
@@ -453,25 +498,38 @@ impl App {
                 if window.inner_size() != size {
                     let _ = window.request_inner_size(size);
                 }
-                if !matches!(self.resting, Resting::On(_)) {
-                    // The swapchain still holds the last frame from before it
-                    // stepped aside; clear it so the sill eases in from nothing.
-                    let answers = self.answers();
-                    if let Some(glass) = &mut self.glass {
-                        glass.draw(
-                            window.scale_factor(),
-                            0.0,
-                            &self.appearance.at(Instant::now()),
-                            &self.sill.shown(),
-                            [0.0; 2],
-                            answers,
-                        );
+                let on = matches!(self.resting, Resting::On(_));
+                if let Some(what) = self.covered {
+                    if !on || self.presence.gone(Instant::now()) {
+                        if on {
+                            window.set_visible(false);
+                            self.presence.leave();
+                        }
+                        Resting::Covered(what)
+                    } else {
+                        // Behind the fullscreen app at once, so it is never in
+                        // front of it, and faded out there in case it shows.
+                        if !self.lowered {
+                            tracing::debug!("{what} came up; fading out behind it");
+                            window.set_window_level(WindowLevel::AlwaysOnBottom);
+                            self.lowered = true;
+                        }
+                        self.presence.fade(Instant::now());
+                        Resting::On(sill)
                     }
-                    // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
-                    window.set_visible(true);
-                    self.presence.arrive(Instant::now());
+                } else {
+                    if self.lowered {
+                        window.set_window_level(WindowLevel::AlwaysOnTop);
+                        self.lowered = false;
+                    }
+                    if on {
+                        // Turned back halfway through fading out.
+                        self.presence.arrive(Instant::now());
+                    } else {
+                        self.show(window);
+                    }
+                    Resting::On(sill)
                 }
-                Resting::On(sill)
             }
             Err(why) => {
                 if matches!(self.resting, Resting::On(_)) {
@@ -497,6 +555,7 @@ impl App {
                     sill.top
                 ),
                 Resting::Aside(why) => tracing::info!("stepping aside: {why}"),
+                Resting::Covered(what) => tracing::info!("stepping aside for {what}"),
                 Resting::Unknown => {}
             }
             #[cfg(windows)]
@@ -715,6 +774,21 @@ impl ApplicationHandler<Wake> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.hearing.poll();
+        if Instant::now() >= self.covered_seen + COVER_EVERY {
+            self.covered_seen = Instant::now();
+            let was = self.covered;
+            self.covered = covered();
+            if self.covered != was {
+                self.look(event_loop);
+            }
+        }
+        // Once it has faded out, it steps aside and stops drawing.
+        if matches!(self.resting, Resting::On(_))
+            && self.covered.is_some()
+            && self.presence.gone(Instant::now())
+        {
+            self.look(event_loop);
+        }
         // Windows is only asked while the config leaves the place open.
         if self.config.place().is_none() && self.whereabouts.due(SystemTime::now()) {
             self.whereabouts.ask(SystemTime::now(), self.proxy.clone());
@@ -729,8 +803,14 @@ impl ApplicationHandler<Wake> for App {
             self.reload(pending);
         }
         // While the sill shows, draw at the idle rate, or the music's while it
-        // plays. While it is aside, wake only for events and the settling looks.
-        let mut wake = self.settle.next();
+        // plays. While it is aside, wake only for events, the settling looks
+        // and to ask whether anything is fullscreen.
+        let next_cover = self.covered_seen + COVER_EVERY;
+        let mut wake = Some(
+            self.settle
+                .next()
+                .map_or(next_cover, |at| at.min(next_cover)),
+        );
         if let Some(pending) = self.pending {
             wake = Some(wake.map_or(pending.at, |at| at.min(pending.at)));
         }
