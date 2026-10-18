@@ -2,20 +2,25 @@
 //!
 //! For now the sill is an empty pane of glass with nothing drawn on it yet.
 //! It rests on top of a bottom taskbar on the primary monitor and steps aside in
-//! any other layout. Clicks fall through it, it never takes focus, and it stays
-//! out of the taskbar and Alt+Tab. Drawing arrives with the rest of M1.
+//! any other layout. It follows the taskbar through display, DPI and monitor
+//! changes. Clicks fall through it, it never takes focus, and it stays out of
+//! the taskbar and Alt+Tab. Drawing arrives with the rest of M1.
 
 mod placement;
+mod settle;
 #[cfg(windows)]
 mod win32;
+
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use placement::{Rect, SILL_HEIGHT, Unplaced};
+use settle::Settle;
 
 #[cfg(windows)]
 use win32::taskbar;
@@ -26,12 +31,36 @@ fn taskbar() -> Option<placement::Taskbar> {
     None
 }
 
-#[derive(Default)]
+/// The desktop may have changed shape. The payload says what was heard.
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutChanged(pub &'static str);
+
+/// What the sill is doing, so a change is logged once rather than on every look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resting {
+    Unknown,
+    On(Rect),
+    Aside(Unplaced),
+}
+
 struct App {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    proxy: EventLoopProxy<LayoutChanged>,
     window: Option<Window>,
+    resting: Resting,
+    settle: Settle,
 }
 
 impl App {
+    fn new(proxy: EventLoopProxy<LayoutChanged>) -> Self {
+        Self {
+            proxy,
+            window: None,
+            resting: Resting::Unknown,
+            settle: Settle::default(),
+        }
+    }
+
     /// Where the sill should be right now, or why it shouldn't be anywhere.
     fn place(event_loop: &ActiveEventLoop) -> Result<Rect, Unplaced> {
         let monitor = event_loop
@@ -53,6 +82,7 @@ impl App {
         placement::place(bounds, monitor.scale_factor(), taskbar)
     }
 
+    /// Opens the glass, hidden and not yet placed. [`App::rest`] moves and shows it.
     fn open_sill(&self, event_loop: &ActiveEventLoop) -> anyhow::Result<Window> {
         let mut attributes = WindowAttributes::default()
             .with_title("Windowsill")
@@ -60,15 +90,8 @@ impl App {
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_active(false)
-            .with_visible(false);
-
-        let placed = Self::place(event_loop);
-        attributes = match placed {
-            Ok(sill) => attributes
-                .with_inner_size(PhysicalSize::new(sill.width() as u32, sill.height() as u32))
-                .with_position(PhysicalPosition::new(sill.left, sill.top)),
-            Err(_) => attributes.with_inner_size(LogicalSize::new(800.0, SILL_HEIGHT)),
-        };
+            .with_visible(false)
+            .with_inner_size(LogicalSize::new(800.0, SILL_HEIGHT));
 
         #[cfg(windows)]
         {
@@ -80,57 +103,123 @@ impl App {
         // Through winit, so the click-through bits survive its own style rewrites.
         window.set_cursor_hittest(false)?;
         #[cfg(windows)]
-        win32::make_glass(&window)?;
-
-        // In a layout v1 doesn't support, the glass stays up but hidden, so it can
-        // come back when the taskbar does (#3).
-        if let Err(why) = placed {
-            tracing::info!("stepping aside: {why}");
-            return Ok(window);
-        }
-
-        // Shown last, once it is already glass. With `with_active(false)` winit
-        // shows it with SW_SHOWNOACTIVATE, but that show rewrites the ex-style, so
-        // the glass styles go back on straight after.
-        window.set_visible(true);
-        #[cfg(windows)]
         {
             win32::make_glass(&window)?;
+            win32::watch_layout(&window, self.proxy.clone())?;
+        }
+        Ok(window)
+    }
+
+    /// Looks at the desktop and puts the sill where it belongs: resting on the
+    /// taskbar, or hidden when there is nowhere it can rest. It is cheap enough to
+    /// call whenever anything might have changed, and it only touches the window
+    /// when the answer differs from what the window already is.
+    fn rest(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let now = match Self::place(event_loop) {
+            Ok(sill) => {
+                let size = PhysicalSize::new(sill.width() as u32, sill.height() as u32);
+                let position = PhysicalPosition::new(sill.left, sill.top);
+                // Compared with the window itself rather than the last placement,
+                // because winit resizes the window on its own when the DPI changes.
+                if window.outer_position().ok() != Some(position) {
+                    window.set_outer_position(position);
+                }
+                if window.inner_size() != size {
+                    let _ = window.request_inner_size(size);
+                }
+                if !matches!(self.resting, Resting::On(_)) {
+                    // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
+                    window.set_visible(true);
+                }
+                Resting::On(sill)
+            }
+            Err(why) => {
+                if matches!(self.resting, Resting::On(_)) {
+                    window.set_visible(false);
+                }
+                Resting::Aside(why)
+            }
+        };
+
+        // winit rewrites the ex-style on every show, hide, move and resize, so the
+        // glass styles go back on after each look.
+        #[cfg(windows)]
+        win32::make_glass(window)?;
+
+        if now != self.resting {
+            match now {
+                Resting::On(sill) => tracing::info!(
+                    "the sill rests at {}x{} +{}+{}",
+                    sill.width(),
+                    sill.height(),
+                    sill.left,
+                    sill.top
+                ),
+                Resting::Aside(why) => tracing::info!("stepping aside: {why}"),
+                Resting::Unknown => {}
+            }
+            #[cfg(windows)]
             tracing::debug!(
                 "sill ex-style {:#010x}",
-                win32::ex_style(&window).unwrap_or(0)
+                win32::ex_style(window).unwrap_or(0)
             );
+            self.resting = now;
         }
+        Ok(())
+    }
 
-        Ok(window)
+    /// Looks again, and quits if the window can no longer be looked after.
+    fn look(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(err) = self.rest(event_loop) {
+            tracing::error!("could not place the sill: {err:#}");
+            event_loop.exit();
+        }
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<LayoutChanged> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
         match self.open_sill(event_loop) {
-            Ok(window) => {
-                tracing::info!(
-                    "the sill is up: {:?} at {:?}",
-                    window.inner_size(),
-                    window.outer_position().ok()
-                );
-                self.window = Some(window);
-            }
+            Ok(window) => self.window = Some(window),
             Err(err) => {
                 tracing::error!("could not open the sill: {err:#}");
                 event_loop.exit();
+                return;
             }
         }
+        self.look(event_loop);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, LayoutChanged(what): LayoutChanged) {
+        tracing::debug!("{what}: looking at the taskbar again");
+        self.settle.poke(Instant::now());
+        self.look(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let WindowEvent::CloseRequested | WindowEvent::Destroyed = event {
-            event_loop.exit();
+        match event {
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            // The renderer (#4) resizes its surface here.
+            WindowEvent::Resized(size) => tracing::debug!("sill resized to {size:?}"),
+            _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.settle.due(Instant::now()) {
+            self.look(event_loop);
+        }
+        // Nothing is animated yet, so between looks the loop only wakes for events.
+        event_loop.set_control_flow(match self.settle.next() {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
     }
 }
 
@@ -144,9 +233,9 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("Windowsill {}", env!("CARGO_PKG_VERSION"));
 
-    let event_loop = EventLoop::new()?;
-    // Nothing is animated yet, so the loop only wakes for window events.
+    let event_loop = EventLoop::<LayoutChanged>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut App::default())?;
+    let mut app = App::new(event_loop.create_proxy());
+    event_loop.run_app(&mut app)?;
     Ok(())
 }
