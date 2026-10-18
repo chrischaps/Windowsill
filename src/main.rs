@@ -17,6 +17,7 @@ mod placement;
 mod presence;
 mod settle;
 mod sill;
+mod sky;
 mod sun;
 #[cfg(windows)]
 mod win32;
@@ -60,7 +61,13 @@ const SUN_EVERY: Duration = Duration::from_secs(20);
 fn sunlight(config: &Config, state: SillState) -> SillState {
     match config.place().zip(config.room()) {
         Some((place, room)) => {
-            light::in_sunlight(state, room, sun::position(place, SystemTime::now()))
+            let sun = sun::position(place, SystemTime::now());
+            let shade = config.sky.at(sun);
+            SillState {
+                ambient: shade.ambient.0,
+                vivid: shade.vivid,
+                ..light::in_sunlight(state, room, sun)
+            }
         }
         None => {
             let plain = SillState::default();
@@ -70,6 +77,8 @@ fn sunlight(config: &Config, state: SillState) -> SillState {
                 shadow_side: plain.shadow_side,
                 sunshine: plain.sunshine,
                 window_side: plain.window_side,
+                ambient: plain.ambient,
+                vivid: plain.vivid,
                 ..state
             }
         }

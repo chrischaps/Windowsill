@@ -19,6 +19,7 @@ use crate::light::{self, Room};
 use crate::objects::{Candle, Jar, Plant};
 use crate::palette::{Look, Palette};
 use crate::sill::{self, Ease};
+use crate::sky::Sky;
 use crate::sun::Place;
 
 pub const FILE_NAME: &str = "windowsill.toml";
@@ -50,6 +51,9 @@ pub struct Config {
     pub plant: Plant,
     pub jar: Jar,
     pub candle: Candle,
+    /// The room's light at each height of the sun, as `[[sky]]` tables.
+    /// Any given replace the whole default set.
+    pub sky: Sky,
     /// How slowly the sill follows a change, in seconds. Never under 2.
     pub ease: Ease,
 }
@@ -67,6 +71,7 @@ impl Default for Config {
             plant: Plant::default(),
             jar: Jar::default(),
             candle: Candle::default(),
+            sky: Sky::default(),
             ease: Ease::default(),
         }
     }
@@ -164,6 +169,7 @@ impl Config {
                 bail!("{name}.at {at} is not between 0 and 1");
             }
         }
+        self.sky.check().map_err(|err| anyhow!(err))?;
         Ok(())
     }
 }
@@ -311,6 +317,15 @@ mod tests {
         assert_eq!(e.glow_alpha, d.glow_alpha);
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
         assert_eq!(example.ease, Ease::default());
+        let (e, d) = (&example.sky.0, &Sky::default().0);
+        assert_eq!(e.len(), d.len());
+        for (e, d) in e.iter().zip(d) {
+            assert_eq!(
+                (e.elevation, e.when, e.vivid),
+                (d.elevation, d.when, d.vivid)
+            );
+            assert!(near(e.ambient, d.ambient), "{e:?} vs {d:?}");
+        }
     }
 
     #[test]

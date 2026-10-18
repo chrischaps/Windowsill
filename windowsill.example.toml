@@ -47,8 +47,59 @@ at    = 0.775
 wax   = "#ede3cc"
 flame = "#ffb252"   # the flame, and the warmth it throws
 
+# The room's light through the day and night (Fishbowl's palette), keyed by how
+# high the sun is in degrees. `ambient` is the colour every lit thing takes on;
+# `vivid` how much of its own colour it keeps, from 0 (grey) to 1. Dawn and dusk
+# come at the same height, so a key can belong to the "rising" or "setting" sun;
+# without `when` it is both. The palette eases between keys, and any [[sky]]
+# here replace the whole set.
+[[sky]]   # late night
+elevation = -40
+ambient   = "#475985"
+vivid     = 0.35
+
+[[sky]]   # night
+elevation = -18
+ambient   = "#4d618f"
+vivid     = 0.35
+
+[[sky]]   # dawn
+elevation = 0
+when      = "rising"
+ambient   = "#ccc2c7"
+vivid     = 0.75
+
+[[sky]]   # morning
+elevation = 12
+when      = "rising"
+ambient   = "#fafaf5"
+vivid     = 1.0
+
+[[sky]]   # day
+elevation = 30
+ambient   = "#ffffff"
+vivid     = 1.0
+
+[[sky]]   # afternoon
+elevation = 15
+when      = "setting"
+ambient   = "#fff7eb"
+vivid     = 1.0
+
+[[sky]]   # sunset
+elevation = 2
+when      = "setting"
+ambient   = "#ffd6bd"
+vivid     = 0.95
+
+[[sky]]   # dusk
+elevation = -5
+when      = "setting"
+ambient   = "#8f85a8"
+vivid     = 0.65
+
 [ease]
 # How slowly the sill follows a change, in seconds: the time to cover about two
 # thirds of it. Nothing may be quicker than 2.
-light  = 4.0   # the beam, its colour, the shadows and the moonlight
+light  = 4.0   # the beam, its colour, the shadows, the moonlight and the sky
 candle = 3.0   # the candle catching and going out
