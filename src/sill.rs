@@ -41,6 +41,9 @@ pub struct SillState {
     pub ambient: [f32; 3],
     /// How much of their own colour things keep in it, from 0 (grey) to 1.
     pub vivid: f32,
+    /// How stirred the dust in the beam is by the music, from 0 (settled and
+    /// unseen) to 1.
+    pub dust: f32,
 }
 
 impl Default for SillState {
@@ -58,6 +61,7 @@ impl Default for SillState {
             window_side: 0.0,
             ambient: [1.0; 3],
             vivid: 1.0,
+            dust: 0.0,
         }
     }
 }
@@ -74,6 +78,9 @@ pub struct Ease {
     pub candle: f32,
     /// The candle burning down, and being fresh again in the morning.
     pub wax: f32,
+    /// The dust stirring as music plays and settling after it stops. It keeps
+    /// real time even while the day is sped up, because the music does.
+    pub music: f32,
 }
 
 impl Default for Ease {
@@ -82,17 +89,19 @@ impl Default for Ease {
             light: 4.0,
             candle: 3.0,
             wax: 60.0,
+            music: 3.0,
         }
     }
 }
 
 impl Ease {
     /// Each time constant with its name, for checking the config.
-    pub fn each(&self) -> [(&'static str, f32); 3] {
+    pub fn each(&self) -> [(&'static str, f32); 4] {
         [
             ("light", self.light),
             ("candle", self.candle),
             ("wax", self.wax),
+            ("music", self.music),
         ]
     }
 }
@@ -142,6 +151,13 @@ impl Sill {
             *value = target - (target - *value) * (-dt / tau).exp();
         }
     }
+
+    /// Moves what answers the music toward its target by `dt` real seconds.
+    /// [`Sill::step`] leaves it alone, so a sped-up day doesn't hurry it.
+    pub fn hear(&mut self, dt: f32, ease: &Ease) {
+        let (dust, target) = (&mut self.shown.dust, self.target.dust);
+        *dust = target - (target - *dust) * (-dt / ease.music).exp();
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +179,7 @@ mod tests {
                 window_side: 1.0,
                 ambient: [0.3, 0.4, 0.6],
                 vivid: 0.4,
+                dust: 1.0,
             },
             ..Sill::default()
         }
@@ -182,6 +199,7 @@ mod tests {
             light: QUICKEST,
             candle: QUICKEST,
             wax: QUICKEST,
+            music: QUICKEST,
         };
         let mut sill = sunset();
         let mut last = sill.shown().colour_temperature;
@@ -200,6 +218,46 @@ mod tests {
         assert!(shown.colour_temperature - 2000.0 > 3500.0 / 3.0);
         assert!(1.0 - shown.candle > 1.0 / 3.0);
         assert!(shown.beam_angle - 5.0 > 40.0 / 3.0);
+
+        let mut sill = sunset();
+        for _ in 0..30 {
+            sill.hear(1.0 / 15.0, &quickest);
+        }
+        assert!(1.0 - sill.shown().dust > 1.0 / 3.0);
+    }
+
+    #[test]
+    fn the_music_keeps_its_own_time() {
+        let ease = Ease::default();
+        let mut sill = sunset();
+        // A whole sped-up hour of the day goes by in one frame...
+        sill.step(3600.0, &ease);
+        assert_eq!(sill.shown().dust, 0.0, "the day doesn't stir the dust");
+        // ...but the dust only hears the frame's real time.
+        sill.hear(1.0 / 15.0, &ease);
+        let dust = sill.shown().dust;
+        assert!(dust > 0.0 && dust < 0.05, "{dust}");
+    }
+
+    #[test]
+    fn dust_settles_over_several_seconds() {
+        let ease = Ease::default();
+        let mut sill = Sill::at(SillState {
+            dust: 0.8,
+            ..SillState::default()
+        });
+        sill.target.dust = 0.0;
+        let mut at = |seconds: u32| {
+            for _ in 0..seconds * 15 {
+                sill.hear(1.0 / 15.0, &ease);
+            }
+            sill.shown().dust
+        };
+        assert!(
+            at(2) > 0.4,
+            "still stirred two seconds after the music stops"
+        );
+        assert!(at(13) < 0.01, "settled within about fifteen");
     }
 
     #[test]
@@ -229,6 +287,7 @@ mod tests {
     fn a_long_gap_just_arrives() {
         let mut sill = sunset();
         sill.step(3600.0, &Ease::default());
+        sill.hear(3600.0, &Ease::default());
         assert_eq!(sill.shown(), sill.target);
     }
 

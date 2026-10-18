@@ -28,7 +28,7 @@ cargo run --release -- --at 19:30              # held at dusk
 cargo run --release -- --lat <deg> --lon <deg> # somewhere else's sky
 ```
 
-Only the sky's clock is changed. The ease speeds up with it, so a sped-up day looks like a real one, only shorter. The candle's flicker keeps real time. While sped up, the log notes the sun, moon and candle on every hour.
+Only the sky's clock is changed. The ease speeds up with it, so a sped-up day looks like a real one, only shorter. The candle's flicker and the dust keep real time, as the music does. While sped up, the log notes the sun, moon and candle on every hour.
 
 ## Privacy
 
