@@ -113,8 +113,7 @@ struct Uniforms {
     /// How stirred the dust is, how far through its cycle it has drifted, how
     /// far the plant leans, and how bright the jar's ring is.
     music: [f32; 4],
-    /// Where the plant, jar and candle stand, in physical pixels across, and
-    /// which of them is in front.
+    /// Where the plant, jar, candle and cat stand, in physical pixels across.
     places: [f32; 4],
     /// How high each is lifted, in logical pixels.
     lift: [f32; 4],
@@ -122,12 +121,18 @@ struct Uniforms {
     tip: [f32; 4],
     /// How far what is inside each trails, in degrees to the right.
     swing: [f32; 4],
+    /// Which thing is in front, and how fast the music swings the leaves.
+    order: [f32; 4],
+    /// How the cat lies or stands: see [`crate::cat::Cat::shape`].
+    cat: [[f32; 4]; 3],
     pot: [f32; 4],
     leaf: [f32; 4],
     glass: [f32; 4],
     water: [f32; 4],
     wax: [f32; 4],
     flame: [f32; 4],
+    fur: [f32; 4],
+    mark: [f32; 4],
 }
 
 impl Glass {
@@ -224,8 +229,9 @@ impl Glass {
     /// stand on it, `sill` the light it is in, `flicker` how the candle's
     /// flame breathes, and `music` how the sill answers the music: how far the
     /// dust has come through its cycle, how many degrees the plant's leaves
-    /// lean, how bright the jar's ring is, and how fast the leaves swing. `pose` is how the things stand,
-    /// and how a hand is carrying them.
+    /// lean, how bright the jar's ring is, and how fast the leaves swing.
+    /// `pose` is how the things stand, and how a hand is carrying them, and
+    /// `cat` how the cat is lying or standing.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -236,6 +242,7 @@ impl Glass {
         flicker: [f32; 2],
         music: [f32; 4],
         pose: &Pose,
+        cat: [[f32; 4]; 3],
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -255,7 +262,7 @@ impl Glass {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let size = [self.config.width, self.config.height];
         self.painter.paint(
-            &view, size, scale, presence, look, sill, flicker, music, pose,
+            &view, size, scale, presence, look, sill, flicker, music, pose, cat,
         );
         self.painter.queue.present(frame);
     }
@@ -371,11 +378,10 @@ impl Painter {
         flicker: [f32; 2],
         music: [f32; 4],
         pose: &Pose,
+        cat: [[f32; 4]; 3],
     ) {
         let palette = &look.palette;
         let scale = scale as f32;
-        let [plant, jar, candle] = pose.x.map(|x| x * scale);
-        let four = |[a, b, c]: [f32; 3]| [a, b, c, 0.0];
         let uniforms = Uniforms {
             height: size[1] as f32,
             scale,
@@ -398,19 +404,20 @@ impl Painter {
             ],
             candle: [sill.candle, sill.wax, flicker[0], flicker[1]],
             music: [sill.dust, music[0], music[1], music[2]],
-            places: [plant, jar, candle, pose.front as f32],
-            lift: four(pose.lift),
-            tip: four(pose.tip),
-            swing: {
-                let [plant, jar, candle] = pose.swing;
-                [plant, jar, candle, music[3]]
-            },
+            places: pose.x.map(|x| x * scale),
+            lift: pose.lift,
+            tip: pose.tip,
+            swing: pose.swing,
+            order: [pose.front as f32, music[3], 0.0, 0.0],
+            cat,
             pot: look.plant.pot.padded(),
             leaf: look.plant.leaf.padded(),
             glass: look.jar.glass.padded(),
             water: look.jar.water.padded(),
             wax: look.candle.wax.padded(),
             flame: look.candle.flame.padded(),
+            fur: look.cat.fur.padded(),
+            mark: look.cat.mark.padded(),
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));

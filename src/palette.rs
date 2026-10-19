@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Deserializer, de};
 
-use crate::objects::{Candle, Jar, Plant};
+use crate::objects::{Candle, Cat, Jar, Plant};
 
 /// How long a new look takes to replace the old one. Long enough that a saved
 /// edit never snaps (design rule 1); short enough to tune by eye.
@@ -102,6 +102,7 @@ pub struct Look {
     pub plant: Plant,
     pub jar: Jar,
     pub candle: Candle,
+    pub cat: Cat,
 }
 
 impl Mix for Look {
@@ -111,6 +112,7 @@ impl Mix for Look {
             plant: self.plant.mix(&other.plant, t),
             jar: self.jar.mix(&other.jar, t),
             candle: self.candle.mix(&other.candle, t),
+            cat: self.cat.mix(&other.cat, t),
         }
     }
 }

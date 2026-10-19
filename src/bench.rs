@@ -25,7 +25,7 @@ use crate::pace::Pace;
 use crate::placement::SILL_HEIGHT;
 use crate::sill::{Sill, SillState};
 use crate::sun::Place;
-use crate::{dust, night, ring, sunlight, sway};
+use crate::{cat, dust, night, ring, sunlight, sway};
 
 /// The strip's size: a 2560-wide screen at 150%.
 const SCALE: f64 = 1.5;
@@ -133,7 +133,7 @@ fn measure(
     let per_frame = (SAMPLE_RATE / fps) as usize;
     let look = config.look();
     let pose = Pose::resting(
-        [look.plant.at, look.jar.at, look.candle.at],
+        [look.plant.at, look.jar.at, look.candle.at, look.cat.at],
         size[0] as f32 / SCALE as f32,
     );
     // From early morning, so the run crosses the moving light of sunrise.
@@ -144,6 +144,7 @@ fn measure(
     let mut drift = dust::Drift::default();
     let mut sway = sway::Sway::default();
     let mut ring = ring::Ring::default();
+    let mut cat = cat::Cat::default();
     let mut sound = vec![0.0; per_frame];
     let mut heard_at = 0;
 
@@ -173,6 +174,17 @@ fn measure(
         drift.advance(dt, sill.shown().dust, heard.beat_phase);
         sway.advance(dt, heard.kick, heard.bass_att);
         ring.advance(dt, heard.kick);
+        cat.advance(
+            dt,
+            dt,
+            cat::Feel {
+                x: pose.x[crate::carry::CAT],
+                beat: heard.beat,
+                beat_phase: heard.beat_phase,
+                kick: heard.kick,
+                ..cat::Feel::default()
+            },
+        );
         painter.paint(
             view,
             size,
@@ -183,6 +195,7 @@ fn measure(
             night::flicker(seconds),
             [drift.at(), sway.lean(), ring.light(), sway.speed()],
             &pose,
+            cat.shape(),
         );
         // One frame in flight, as the swapchain allows.
         painter.wait();

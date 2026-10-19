@@ -9,6 +9,10 @@
 //! rocks once or twice and is still. Whatever it was put down on slides aside
 //! to make room, slowly.
 //!
+//! The cat is one of the things too, with two differences. A quick tap that
+//! carries it nowhere wakes it rather than lifting it. And when it walks
+//! somewhere by itself, it says where it is each frame and the sill follows.
+//!
 //! Pure logic in logical pixels across the sill, so it can be tested without a
 //! desktop. Where things rest is kept as a share of the sill's width, from 0 at
 //! the left end to 1 at the right, as the config gives it.
@@ -20,24 +24,36 @@ use serde::Deserialize;
 
 use crate::config;
 
-/// The plant, the jar and the candle, in the order their places are given.
+/// The plant, the jar, the candle and the cat, in the order their places are
+/// given.
 pub const PLANT: usize = 0;
 pub const JAR: usize = 1;
 pub const CANDLE: usize = 2;
+pub const CAT: usize = 3;
+
+/// How many things there are.
+pub const COUNT: usize = 4;
 
 /// Half of each thing's foot, in logical pixels: the pot's rim, the jar, the
-/// candle. Things never stand closer than their feet allow.
-const FOOT: [f32; 3] = [13.0, 11.0, 7.0];
+/// candle, and the cat curled up. Things never stand closer than their feet
+/// allow.
+pub const FOOT: [f32; COUNT] = [13.0, 11.0, 7.0, 15.0];
 
 /// How tall each thing is where a hand can take hold of it: the pot without
-/// its leaves, the jar to its lid, and the candle's wax when it is fresh.
-const BODY: [f32; 3] = [24.0, 33.0, 24.0];
+/// its leaves, the jar to its lid, and the candle's wax when it is fresh. The
+/// cat says how tall it is itself, since it gets up and lies down.
+const BODY: [f32; COUNT] = [24.0, 33.0, 24.0, 0.0];
 
 /// How much room around a thing still counts as taking hold of it.
 const REACH: f32 = 3.0;
 
 /// The space left between two feet when one is made room for.
-const GAP: f32 = 3.0;
+pub const GAP: f32 = 3.0;
+
+/// A press let go of sooner than this, having moved no further than TAP_SLOP
+/// logical pixels, is a tap rather than a carry.
+const TAP_TIME: f32 = 0.3;
+const TAP_SLOP: f32 = 4.0;
 
 /// How far from the ends of the sill a foot may go.
 const END: f32 = 2.0;
@@ -112,38 +128,59 @@ struct Held {
     hand: f32,
     /// How far right of the thing's middle the hand took hold of it.
     grip: f32,
+    /// Where the hand took hold, how long it has held on, in seconds, and the
+    /// furthest it has moved from there, in logical pixels.
+    start: f32,
+    time: f32,
+    travel: f32,
+}
+
+impl Held {
+    /// Whether letting go now would be a tap rather than setting it down.
+    fn tap(&self) -> bool {
+        self.time < TAP_TIME && self.travel <= TAP_SLOP
+    }
+}
+
+/// What letting go did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dropped {
+    /// A quick tap that carried nothing anywhere. The thing is where it was.
+    Tapped(usize),
+    /// Set down: where everything now rests, to be kept.
+    Set([f32; COUNT]),
 }
 
 /// How everything stands right now, for the shader.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     /// Where each stands, in logical pixels across.
-    pub x: [f32; 3],
+    pub x: [f32; COUNT],
     /// How high each is off the edge, in logical pixels.
-    pub lift: [f32; 3],
+    pub lift: [f32; COUNT],
     /// How far each tips, in degrees to the right.
-    pub tip: [f32; 3],
+    pub tip: [f32; COUNT],
     /// How far what is inside each leans, in degrees to the right.
-    pub swing: [f32; 3],
+    pub swing: [f32; COUNT],
     /// Which is drawn in front: the last one picked up.
     pub front: usize,
 }
 
 impl Pose {
     /// Everything standing still at `at`, shares of a sill `width` logical px wide.
-    pub fn resting(at: [f32; 3], width: f32) -> Self {
+    pub fn resting(at: [f32; COUNT], width: f32) -> Self {
         Self {
             x: at.map(|at| at * width),
-            lift: [0.0; 3],
-            tip: [0.0; 3],
-            swing: [0.0; 3],
+            lift: [0.0; COUNT],
+            tip: [0.0; COUNT],
+            swing: [0.0; COUNT],
             front: CANDLE,
         }
     }
 }
 
 pub struct Carry {
-    things: [Thing; 3],
+    things: [Thing; COUNT],
     held: Option<Held>,
     front: usize,
     /// The width the things were last placed against, in logical pixels.
@@ -153,7 +190,7 @@ pub struct Carry {
 impl Carry {
     /// Things resting at `at`, shares of the sill's width, not yet placed
     /// against one. They appear where they rest on the first step.
-    pub fn new(at: [f32; 3]) -> Self {
+    pub fn new(at: [f32; COUNT]) -> Self {
         Self {
             things: at.map(|at| Thing {
                 at,
@@ -166,7 +203,7 @@ impl Carry {
     }
 
     /// Where each thing rests, as shares of the sill's width.
-    pub fn rests(&self) -> [f32; 3] {
+    pub fn rests(&self) -> [f32; COUNT] {
         self.things.map(|thing| thing.at)
     }
 
@@ -177,16 +214,17 @@ impl Carry {
 
     /// Which thing a hand at `x` across and `y` up from the edge, in logical
     /// pixels, would take hold of, the one in front first. `candle` is how much
-    /// of the candle is left, from 0 to 1.
-    pub fn under(&self, x: f32, y: f32, candle: f32) -> Option<usize> {
-        let mut order = [PLANT, JAR, CANDLE];
+    /// of the candle is left, from 0 to 1, and `cat` how tall the cat is
+    /// right now, in logical pixels.
+    pub fn under(&self, x: f32, y: f32, candle: f32, cat: f32) -> Option<usize> {
+        let mut order = [PLANT, JAR, CANDLE, CAT];
         order.sort_by_key(|&i| i == self.front);
         order.into_iter().rev().find(|&i| {
             let thing = &self.things[i];
-            let tall = if i == CANDLE {
-                BODY[i] * candle + 4.0
-            } else {
-                BODY[i]
+            let tall = match i {
+                CANDLE => BODY[i] * candle + 4.0,
+                CAT => cat,
+                _ => BODY[i],
             };
             (x - thing.x).abs() <= FOOT[i] + REACH
                 && y >= thing.lift - REACH
@@ -200,6 +238,9 @@ impl Carry {
             which,
             hand: x,
             grip: x - self.things[which].x,
+            start: x,
+            time: 0.0,
+            travel: 0.0,
         });
         self.front = which;
     }
@@ -208,6 +249,7 @@ impl Carry {
     pub fn reach(&mut self, x: f32) {
         if let Some(held) = &mut self.held {
             held.hand = x;
+            held.travel = held.travel.max((x - held.start).abs());
         }
     }
 
@@ -216,11 +258,20 @@ impl Carry {
         self.held.map(|held| held.which)
     }
 
-    /// Lets go. The thing rests where the hand left it, anything it was put
-    /// down on is given a place clear of it, and the new places are returned
-    /// to be kept. `None` if nothing was held.
-    pub fn drop(&mut self) -> Option<[f32; 3]> {
+    /// What is being carried, rather than only pressed on for a moment.
+    pub fn carried(&self) -> Option<usize> {
+        self.held.filter(|held| !held.tap()).map(|held| held.which)
+    }
+
+    /// Lets go. A tap leaves everything where it was. Otherwise the thing
+    /// rests where the hand left it, anything it was put down on is given a
+    /// place clear of it, and the new places are returned to be kept. `None`
+    /// if nothing was held.
+    pub fn drop(&mut self) -> Option<Dropped> {
         let held = self.held.take()?;
+        if held.tap() {
+            return Some(Dropped::Tapped(held.which));
+        }
         // Put down, it stops where it was put, whatever the hand was doing.
         self.things[held.which].speed = 0.0;
         let width = self.width.max(1.0);
@@ -230,7 +281,40 @@ impl Carry {
         for (thing, x) in self.things.iter_mut().zip(xs) {
             thing.at = x / width;
         }
-        Some(self.rests())
+        Some(Dropped::Set(self.rests()))
+    }
+
+    /// `which` walks itself to `x` logical pixels across, and rests wherever
+    /// it has got to. Called before [`Carry::step`] on each frame it walks, so
+    /// it is drawn exactly there and never counts as sliding.
+    pub fn walk(&mut self, which: usize, x: f32) {
+        if self.held.is_some_and(|held| held.which == which) || self.width <= 0.0 {
+            return;
+        }
+        let x = clamp_foot(x, which, self.width);
+        let thing = &mut self.things[which];
+        thing.at = x / self.width;
+        thing.x = x;
+        thing.speed = 0.0;
+    }
+
+    /// `which` has walked as far as it is going. Anything that came to stand
+    /// where it lay down meanwhile makes room, and where everything now rests
+    /// is returned to be kept.
+    pub fn arrive(&mut self, which: usize) -> [f32; COUNT] {
+        let width = self.width.max(1.0);
+        let mut xs = self.things.map(|thing| thing.at * width);
+        make_room(&mut xs, which, width);
+        for (thing, x) in self.things.iter_mut().zip(xs) {
+            thing.at = x / width;
+        }
+        self.rests()
+    }
+
+    /// Where everything rests, in logical pixels across, and how wide the sill
+    /// is. Nothing is known until the first step.
+    pub fn spots(&self) -> Option<([f32; COUNT], f32)> {
+        (self.width > 0.0).then(|| (self.things.map(|thing| thing.at * self.width), self.width))
     }
 
     /// Lets go without moving anything, as when the sill steps aside mid-carry:
@@ -244,10 +328,21 @@ impl Carry {
         clamp_foot(held.hand - held.grip, held.which, self.width)
     }
 
+    /// Whether `which` is off the edge in the hand: from the start for most
+    /// things, but the cat only once it is clearly being carried, so a tap
+    /// doesn't bounce it.
+    fn lifting(&self, which: usize) -> bool {
+        self.held
+            .is_some_and(|held| held.which == which && (which != CAT || !held.tap()))
+    }
+
     /// Moves everything on by `dt` real seconds on a sill `width` logical px wide.
     pub fn step(&mut self, dt: f32, width: f32) {
         let placed = self.width > 0.0;
         self.width = width;
+        if let Some(held) = &mut self.held {
+            held.time += dt.max(0.0);
+        }
         if placed && dt <= 0.0 {
             return;
         }
@@ -274,19 +369,24 @@ impl Carry {
         let steps = (dt / STEP).ceil().max(1.0);
         let h = dt / steps;
         let held = self.held.map(|held| (held.which, self.hand_target(&held)));
+        let lifting = [PLANT, JAR, CANDLE, CAT].map(|i| self.lifting(i));
         for (i, thing) in self.things.iter_mut().enumerate() {
-            let (target, lifted) = match held {
+            let (target, in_hand) = match held {
                 Some((which, x)) if which == i => (x, true),
                 _ => (clamp_foot(thing.at * width, i, width), false),
             };
-            let (lift_to, tau) = if lifted { (LIFT, RISE) } else { (0.0, SETTLE) };
+            let (lift_to, tau) = if lifting[i] {
+                (LIFT, RISE)
+            } else {
+                (0.0, SETTLE)
+            };
             // In the hand it goes exactly where the hand does, spread evenly
             // over the frame, and its speed is how fast the hand moved, a
             // little smoothed.
             let (from, hand_speed) = (thing.x, (target - thing.x) / dt);
             let smooth = 1.0 - (-h / SMOOTH).exp();
             for k in 1..=steps as u32 {
-                let push = if lifted {
+                let push = if in_hand {
                     let was = thing.speed;
                     thing.x = from + (target - from) * k as f32 / steps;
                     thing.speed += (hand_speed - thing.speed) * smooth;
@@ -376,8 +476,8 @@ fn clamp_foot(x: f32, which: usize, width: f32) -> f32 {
 
 /// Moves the things in `xs` apart until no two feet overlap, keeping `put`
 /// where it was put down if there is any room to, and all of them on the sill.
-fn make_room(xs: &mut [f32; 3], put: usize, width: f32) {
-    let mut order = [PLANT, JAR, CANDLE];
+fn make_room(xs: &mut [f32; COUNT], put: usize, width: f32) {
+    let mut order = [PLANT, JAR, CANDLE, CAT];
     // Whichever side of a thing's middle the new one lands, it goes that side.
     order.sort_by(|&a, &b| xs[a].total_cmp(&xs[b]));
     for fixed in [Some(put), None] {
@@ -410,13 +510,14 @@ fn make_room(xs: &mut [f32; 3], put: usize, width: f32) {
 }
 
 /// Where things were last set down, from `%APPDATA%\Windowsill`, if they have
-/// ever been moved and the file makes sense.
-pub fn remembered() -> Option<[f32; 3]> {
-    parse(&std::fs::read_to_string(path()?).ok()?)
+/// ever been moved and the file makes sense. Anything the file doesn't
+/// mention, like a cat that came after it was written, rests where `set` says.
+pub fn remembered(set: [f32; COUNT]) -> Option<[f32; COUNT]> {
+    parse(&std::fs::read_to_string(path()?).ok()?, set)
 }
 
 /// Keeps where things now rest, so they are there tomorrow.
-pub fn keep(at: [f32; 3]) {
+pub fn keep(at: [f32; COUNT]) {
     let Some(path) = path() else { return };
     let written = path
         .parent()
@@ -436,26 +537,33 @@ fn path() -> Option<PathBuf> {
     config::app_dir().map(|dir| dir.join(FILE_NAME))
 }
 
-fn parse(text: &str) -> Option<[f32; 3]> {
+fn parse(text: &str, set: [f32; COUNT]) -> Option<[f32; COUNT]> {
     #[derive(Deserialize)]
     struct Kept {
         plant: f32,
         jar: f32,
         candle: f32,
+        cat: Option<f32>,
     }
     let kept: Kept = toml::from_str(text).ok()?;
-    let at = [kept.plant, kept.jar, kept.candle];
+    let at = [
+        kept.plant,
+        kept.jar,
+        kept.candle,
+        kept.cat.unwrap_or(set[CAT]),
+    ];
     at.iter().all(|at| (0.0..=1.0).contains(at)).then_some(at)
 }
 
-fn render([plant, jar, candle]: [f32; 3]) -> String {
+fn render([plant, jar, candle, cat]: [f32; COUNT]) -> String {
     format!(
         "# Where the things on the sill were last set down, from 0 at its left\n\
          # end to 1 at its right. Changing `at` in windowsill.toml moves them\n\
          # again; deleting this file puts them back where it says.\n\
          plant = {plant:.4}\n\
          jar = {jar:.4}\n\
-         candle = {candle:.4}\n"
+         candle = {candle:.4}\n\
+         cat = {cat:.4}\n"
     )
 }
 
@@ -465,9 +573,20 @@ mod tests {
 
     const WIDTH: f32 = 1920.0;
 
+    /// Where the config puts things before a hand moves them.
+    const SET: [f32; COUNT] = [0.72, 0.75, 0.775, 0.80];
+
+    /// Where things rest after being set down; a tap fails the test.
+    fn set(dropped: Option<Dropped>) -> [f32; COUNT] {
+        match dropped {
+            Some(Dropped::Set(at)) => at,
+            other => panic!("not set down: {other:?}"),
+        }
+    }
+
     /// The default arrangement, placed and settled.
     fn carry() -> Carry {
-        let mut carry = Carry::new([0.72, 0.75, 0.775]);
+        let mut carry = Carry::new(SET);
         carry.step(1.0 / 60.0, WIDTH);
         carry
     }
@@ -486,8 +605,8 @@ mod tests {
     fn things_start_where_they_rest() {
         let carry = carry();
         let pose = carry.pose();
-        assert_eq!(pose.x, [0.72 * WIDTH, 0.75 * WIDTH, 0.775 * WIDTH]);
-        assert_eq!(pose.lift, [0.0; 3]);
+        assert_eq!(pose.x, SET.map(|at| at * WIDTH));
+        assert_eq!(pose.lift, [0.0; COUNT]);
         assert!(!carry.moving());
     }
 
@@ -495,14 +614,14 @@ mod tests {
     fn a_hand_finds_what_it_is_over() {
         let carry = carry();
         let jar = 0.75 * WIDTH;
-        assert_eq!(carry.under(jar, 10.0, 1.0), Some(JAR));
-        assert_eq!(carry.under(jar + 30.0, 10.0, 1.0), None);
+        assert_eq!(carry.under(jar, 10.0, 1.0, 14.0), Some(JAR));
+        assert_eq!(carry.under(jar + 30.0, 10.0, 1.0, 14.0), None);
         // Above the jar's lid is the desktop, not the jar.
-        assert_eq!(carry.under(jar, 45.0, 1.0), None);
+        assert_eq!(carry.under(jar, 45.0, 1.0, 14.0), None);
         // The candle burns down, and so does where it can be held.
         let candle = 0.775 * WIDTH;
-        assert_eq!(carry.under(candle, 26.0, 1.0), Some(CANDLE));
-        assert_eq!(carry.under(candle, 26.0, 0.5), None);
+        assert_eq!(carry.under(candle, 26.0, 1.0, 14.0), Some(CANDLE));
+        assert_eq!(carry.under(candle, 26.0, 0.5, 14.0), None);
     }
 
     #[test]
@@ -549,7 +668,7 @@ mod tests {
             0.775 * WIDTH,
             (start - 0.775 * WIDTH) / 30.0,
         );
-        let rests = carry.drop().unwrap();
+        let rests = set(carry.drop());
         assert!((rests[CANDLE] * WIDTH - hand).abs() < 0.5, "{rests:?}");
         run(&mut carry, 4.0, hand, 0.0);
         assert!(!carry.moving(), "{:?}", carry.pose());
@@ -564,7 +683,7 @@ mod tests {
         carry.grab(CANDLE, 0.775 * WIDTH);
         carry.reach(jar + 2.0);
         carry.step(1.0, WIDTH);
-        let rests = carry.drop().unwrap().map(|at| at * WIDTH);
+        let rests = set(carry.drop()).map(|at| at * WIDTH);
         assert!((rests[CANDLE] - (jar + 2.0)).abs() < 1e-3, "{rests:?}");
         // The jar makes room to the left, and so does the plant beyond it.
         assert!(
@@ -593,8 +712,8 @@ mod tests {
         carry.grab(JAR, 0.75 * WIDTH);
         carry.reach(0.0);
         carry.step(2.0, WIDTH);
-        let rests = carry.drop().unwrap().map(|at| at * WIDTH);
-        let mut order = [PLANT, JAR, CANDLE];
+        let rests = set(carry.drop()).map(|at| at * WIDTH);
+        let mut order = [PLANT, JAR, CANDLE, CAT];
         order.sort_by(|&a, &b| rests[a].total_cmp(&rests[b]));
         assert!(rests[order[0]] >= FOOT[order[0]]);
         for pair in order.windows(2) {
@@ -633,9 +752,75 @@ mod tests {
 
     #[test]
     fn the_kept_file_reads_back() {
-        let at = [0.1, 0.5, 0.9];
-        assert_eq!(parse(&render(at)), Some(at));
-        assert_eq!(parse("plant = 2.0\njar = 0.5\ncandle = 0.5\n"), None);
-        assert_eq!(parse("plant = 0.5\n"), None);
+        let at = [0.1, 0.5, 0.9, 0.95];
+        assert_eq!(parse(&render(at), SET), Some(at));
+        assert_eq!(parse("plant = 2.0\njar = 0.5\ncandle = 0.5\n", SET), None);
+        assert_eq!(parse("plant = 0.5\n", SET), None);
+    }
+
+    #[test]
+    fn a_file_from_before_the_cat_still_reads() {
+        assert_eq!(
+            parse("plant = 0.1\njar = 0.2\ncandle = 0.3\n", SET),
+            Some([0.1, 0.2, 0.3, SET[CAT]])
+        );
+    }
+
+    #[test]
+    fn a_quick_press_is_a_tap() {
+        let mut carry = carry();
+        let cat = SET[CAT] * WIDTH;
+        carry.grab(CAT, cat);
+        run(&mut carry, 0.1, cat, 0.5);
+        // The cat isn't lifted for a tap, and nothing moves.
+        assert!(carry.pose().lift[CAT] < STILL);
+        assert_eq!(carry.carried(), None);
+        assert_eq!(carry.drop(), Some(Dropped::Tapped(CAT)));
+        assert_eq!(carry.rests(), SET);
+    }
+
+    #[test]
+    fn a_press_held_or_moved_is_a_carry() {
+        let mut carry = carry();
+        let cat = SET[CAT] * WIDTH;
+        carry.grab(CAT, cat);
+        run(&mut carry, 0.5, cat, 0.0);
+        assert_eq!(carry.carried(), Some(CAT));
+        assert!(carry.pose().lift[CAT] > LIFT * 0.9);
+        set(carry.drop());
+
+        let mut carry = self::carry();
+        carry.grab(CAT, cat);
+        run(&mut carry, 0.1, cat, -2.0);
+        set(carry.drop());
+    }
+
+    #[test]
+    fn a_walking_cat_is_drawn_where_it_is_and_kept_when_it_lies_down() {
+        let mut carry = carry();
+        let start = SET[CAT] * WIDTH;
+        for k in 1..=60 {
+            carry.walk(CAT, start + k as f32 * 0.2);
+            carry.step(1.0 / 30.0, WIDTH);
+            assert!((carry.pose().x[CAT] - (start + k as f32 * 0.2)).abs() < 1e-2);
+            assert!(!carry.moving());
+        }
+        let rests = carry.arrive(CAT);
+        assert!(
+            (rests[CAT] * WIDTH - (start + 12.0)).abs() < 1e-2,
+            "{rests:?}"
+        );
+    }
+
+    #[test]
+    fn a_cat_lying_down_on_something_moves_it_aside() {
+        let mut carry = carry();
+        let candle = SET[CANDLE] * WIDTH;
+        carry.walk(CAT, candle + 3.0);
+        let rests = carry.arrive(CAT).map(|at| at * WIDTH);
+        assert!(
+            rests[CANDLE] <= rests[CAT] - FOOT[CANDLE] - FOOT[CAT] - GAP + 1e-3,
+            "{rests:?}"
+        );
     }
 }

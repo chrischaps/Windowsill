@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`windowsill` is a single Rust binary: a 90 px clear strip just above the bottom taskbar on the primary monitor, with a plant, a jar and a candle standing on the taskbar's top edge in the light of the real sun, moon and weather, responding gently to system audio. The taskbar is the sill; there is no drawn ledge. It uses Seoul's stack: winit 0.30, wgpu 30, and cpal 0.18 from M3. Windows only for v1. The full design is in `docs/proposal.md`.
+`windowsill` is a single Rust binary: a 90 px clear strip just above the bottom taskbar on the primary monitor, with a plant, a jar and a candle standing on the taskbar's top edge and a cat asleep beside them in the light of the real sun, moon and weather, responding gently to system audio. The taskbar is the sill; there is no drawn ledge. It uses Seoul's stack: winit 0.30, wgpu 30, and cpal 0.18 from M3. Windows only for v1. The full design is in `docs/proposal.md`.
 
 ## Commands
 
@@ -19,7 +19,7 @@ RUST_LOG=windowsill=debug cargo run --release
 ## Design rules (from the proposal; treat as hard constraints)
 
 1. **Peripheral, never central.** Any visible change takes ≥2 s. Nothing moves faster than a leaf in a draft. All state is eased every frame; nothing snaps.
-2. **Never asks.** No notifications, sounds, badges or prompts. Clicks pass through everywhere but the things themselves. Two interactions, both the user's to start: pick a thing up and carry it along the taskbar (`carry.rs`), and hover-and-hold over the candle for a tiny tray menu. A hand moving a thing is the one exception to rule 1's pace; what it disturbs (neighbours making room, the slosh, the flame) still eases.
+2. **Never asks.** No notifications, sounds, badges or prompts. Clicks pass through everywhere but the things themselves. Interactions are all the user's to start: pick a thing up and carry it along the taskbar (`carry.rs`), hover-and-hold over the candle for a tiny tray menu, and tap or rest the pointer on the cat (`cat.rs`). A hand moving a thing is the one exception to rule 1's pace; what it disturbs (neighbours making room, the slosh, the flame) still eases.
 3. **True to the world.** Real sun angle, real weather, real moon phase. If something is unknown, show plain daylight. Never invent it.
 4. **Steps aside.** Hide during fullscreen apps and presentations, when the taskbar auto-hides, and in any unsupported taskbar layout.
 5. **Light on the machine.** Under 1% CPU. 15 fps idle, 30 fps with music. Stop completely on screen lock.
