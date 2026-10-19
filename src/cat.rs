@@ -26,20 +26,31 @@ use std::f32::consts::{PI, TAU};
 use crate::carry::{CANDLE, CAT, COUNT, FOOT, GAP};
 use crate::sill::SillState;
 
-/// How long getting up takes, and lying down again, in seconds. How far up it
-/// is follows the phase with this time constant.
+/// How long getting up takes, and lying down again, in seconds.
 const RISING: f32 = 2.5;
 const SETTLING: f32 = 3.0;
+
+/// How it gets up and lies down: one end leads and the other follows, each on
+/// a critically damped spring, so it starts gently and arrives without a
+/// bump. Getting up its front leads, as a cat pushes up onto its forelegs and
+/// then lifts its hindquarters; lying down its hindquarters lead. LEAD and
+/// FOLLOW are the springs' natural frequencies, in radians a second.
+const LEAD: f32 = 3.0;
+const FOLLOW: f32 = 3.6;
+
+/// How quickly a stretch fades if it is cut short.
 const UP_TAU: f32 = 0.6;
 
 /// How long a stretch takes, from first reaching forward to standing again.
 const STRETCHING: f32 = 3.6;
 
 /// How fast it walks, in logical pixels a second, and how far it goes with
-/// each full stride. It eases into the walk and out of it over EASE seconds.
+/// each full stride. It picks up speed over about GATHER seconds, keeps a
+/// steady pace, and slows to a stop over about BRAKE seconds at the end.
 const PACE: f32 = 20.0;
 const STRIDE: f32 = 32.0;
-const EASE: f32 = 1.5;
+const GATHER: f32 = 0.35;
+const BRAKE: f32 = 1.1;
 
 /// How far a tap sends it, at most, in logical pixels, and the least room
 /// worth walking into.
@@ -90,6 +101,11 @@ const EAR_PERIOD: f32 = 0.6;
 const EAR_DAMPING: f32 = 0.6;
 const EAR_KICK: f32 = 260.0;
 
+/// Now and then in its sleep an ear twitches by itself, about this often, in
+/// seconds, and this hard, in degrees a second.
+const TWITCH_EVERY: f32 = 23.0;
+const TWITCH: f32 = 110.0;
+
 /// The longest step the springs are moved in one go.
 const STEP: f32 = 1.0 / 60.0;
 
@@ -109,11 +125,10 @@ enum Doing {
     Stretching {
         to: f32,
     },
-    /// Walking from `from` to `to`, which takes `span` seconds.
+    /// Walking from `from` to `to`.
     Walking {
         from: f32,
         to: f32,
-        span: f32,
     },
     /// Lying down again.
     Settling,
@@ -168,12 +183,21 @@ pub struct Cat {
     doing: Doing,
     /// Seconds since it began doing it.
     since: f32,
-    /// How far up it is, from 0 curled to 1 standing.
-    up: f32,
+    /// How far up its front and its hindquarters are, from 0 curled to 1
+    /// standing, and how fast each is moving.
+    front: f32,
+    front_speed: f32,
+    rear: f32,
+    rear_speed: f32,
     /// How far into a stretch, from 0 to 1.
     stretch: f32,
     /// How many strides it has walked; only the part after the point shows.
     stride: f32,
+    /// How far along its walk it is, in logical pixels, how fast it is going,
+    /// and the pace it is gathering toward.
+    walked: f32,
+    speed: f32,
+    gathering: f32,
     /// Which way it faces, -1 left to 1 right, easing toward `face`.
     facing: f32,
     face: f32,
@@ -190,10 +214,13 @@ pub struct Cat {
     tail: f32,
     tail_phase: f32,
     /// How far its ear is flicked, in degrees, how fast, and seconds since the
-    /// last flick.
+    /// last flick and the last twitch in its sleep.
     ear: f32,
     ear_speed: f32,
     since_ear: f32,
+    since_twitch: f32,
+    /// Seconds it has slept, for the slow drift of its tail.
+    asleep: f32,
     /// Seconds of the sky's time before it gets up by itself again.
     wait: f32,
     /// Where it has walked to this frame, while it walks.
@@ -209,9 +236,15 @@ impl Default for Cat {
         Self {
             doing: Doing::Asleep,
             since: 0.0,
-            up: 0.0,
+            front: 0.0,
+            front_speed: 0.0,
+            rear: 0.0,
+            rear_speed: 0.0,
             stretch: 0.0,
             stride: 0.0,
+            walked: 0.0,
+            speed: 0.0,
+            gathering: 0.0,
             facing: 1.0,
             face: 1.0,
             breath: 0.0,
@@ -225,6 +258,8 @@ impl Default for Cat {
             ear: 0.0,
             ear_speed: 0.0,
             since_ear: EAR_GAP,
+            since_twitch: 0.0,
+            asleep: 0.0,
             wait: 0.0,
             at: None,
             arrived: false,
@@ -293,7 +328,12 @@ impl Cat {
             }
             *self = Self {
                 doing: Doing::Asleep,
-                up: 0.0,
+                front: 0.0,
+                front_speed: 0.0,
+                rear: 0.0,
+                rear_speed: 0.0,
+                speed: 0.0,
+                gathering: 0.0,
                 stretch: 0.0,
                 held: 0.0,
                 pet: 0.0,
@@ -334,16 +374,13 @@ impl Cat {
                 }),
             ),
             Doing::Stretching { to } => (1.0, (t >= STRETCHING).then(|| walk(feel.x, to))),
-            Doing::Walking { from, to, span } => {
-                let along = ease((t / span).min(1.0));
-                let x = from + (to - from) * along;
-                let was = from + (to - from) * ease(((t - dt) / span).clamp(0.0, 1.0));
-                self.stride += (x - was).abs() / STRIDE;
-                self.at = Some(x);
-                if t >= span {
+            Doing::Walking { from, to } => {
+                let there = self.pad(dt, (to - from).abs());
+                self.at = Some(from + (to - from).signum() * self.walked);
+                if there {
                     self.arrived = true;
                 }
-                (1.0, (t >= span).then_some(Doing::Settling))
+                (1.0, there.then_some(Doing::Settling))
             }
             Doing::Settling => (0.0, (t >= SETTLING).then_some(Doing::Asleep)),
         };
@@ -355,7 +392,7 @@ impl Cat {
         self.held = toward(self.held, held_to, HELD_TAU, dt);
         // Held, it hangs half uncurled whatever it was doing.
         let up_to = if feel.held { 0.4 } else { up_to };
-        self.up = toward(self.up, up_to, UP_TAU, dt);
+        self.rise(dt, up_to);
         self.stretch = match self.doing {
             Doing::Stretching { .. } => (PI * (self.since / STRETCHING).min(1.0)).sin().powi(2),
             _ => toward(self.stretch, 0.0, UP_TAU, dt),
@@ -363,7 +400,7 @@ impl Cat {
         self.stride = self.stride.fract();
 
         // It turns round only once it is up on its feet.
-        if self.up > 0.6 {
+        if self.up() > 0.6 {
             self.facing = toward(self.facing, self.face, 0.45, dt);
         }
 
@@ -388,6 +425,7 @@ impl Cat {
         };
         self.eyes = toward(self.eyes, eyes_to, EYES_TAU, dt);
 
+        self.asleep = if awake { 0.0 } else { self.asleep + dt };
         let period = BREATH + (BREATH_PETTED - BREATH) * self.pet;
         self.breath = (self.breath + TAU * dt / period) % TAU;
         self.depth = 1.0 + 0.7 * self.pet;
@@ -405,6 +443,13 @@ impl Cat {
             self.ear_speed += EAR_KICK;
             self.since_ear = 0.0;
         }
+        // Unevenly spaced, so it never looks like clockwork.
+        self.since_twitch += dt;
+        let next = TWITCH_EVERY * (1.0 + 0.4 * (self.asleep * 0.013).sin());
+        if self.doing == Doing::Asleep && self.since_twitch >= next {
+            self.ear_speed += TWITCH;
+            self.since_twitch = 0.0;
+        }
         let steps = (dt / STEP).ceil().max(1.0);
         let h = dt / steps;
         let w = TAU / EAR_PERIOD;
@@ -414,12 +459,74 @@ impl Cat {
         }
     }
 
+    /// How far up it is on the whole, from 0 curled to 1 standing.
+    fn up(&self) -> f32 {
+        0.5 * (self.front + self.rear)
+    }
+
+    /// Moves its front and hindquarters on by `dt` toward `to`: the end that
+    /// leads chases `to`, and the other chases the end that leads.
+    fn rise(&mut self, dt: f32, to: f32) {
+        let front_leads = to >= self.up();
+        let steps = (dt / STEP).ceil().max(1.0);
+        let h = dt / steps;
+        let chase = |value: &mut f32, speed: &mut f32, to: f32, w: f32| {
+            *speed += (w * w * (to - *value) - 2.0 * w * *speed) * h;
+            *value += *speed * h;
+        };
+        for _ in 0..steps as u32 {
+            if front_leads {
+                chase(&mut self.front, &mut self.front_speed, to, LEAD);
+                let lead = self.front;
+                chase(&mut self.rear, &mut self.rear_speed, lead, FOLLOW);
+            } else {
+                chase(&mut self.rear, &mut self.rear_speed, to, LEAD);
+                let lead = self.rear;
+                chase(&mut self.front, &mut self.front_speed, lead, FOLLOW);
+            }
+        }
+    }
+
+    /// Walks on by `dt` along a walk `far` logical pixels long, and says
+    /// whether it is there. Its pace gathers toward PACE in two smooth lags,
+    /// so it never lurches off, and it slows ahead of the end, as hard as it
+    /// can without stopping short, so it comes to a stop rather than braking.
+    fn pad(&mut self, dt: f32, far: f32) -> bool {
+        let steps = (dt / STEP).ceil().max(1.0);
+        let h = dt / steps;
+        let k = 1.0 - (-h / GATHER).exp();
+        for _ in 0..steps as u32 {
+            let left = (far - self.walked).max(0.0);
+            // The pace takes a moment to follow what it wants, so it looks
+            // ahead by the ground it covers meanwhile.
+            let ahead = (left - self.speed * 2.0 * GATHER).max(0.0);
+            let want = PACE.min((2.0 * PACE / BRAKE * ahead).sqrt());
+            self.gathering += (want - self.gathering) * k;
+            self.speed += (self.gathering - self.speed) * k;
+            let step = (self.speed * h).min(left);
+            self.walked += step;
+            self.stride += step / STRIDE;
+        }
+        let there = far - self.walked < 0.05 || (far - self.walked < 0.5 && self.speed < 0.5);
+        if there {
+            self.walked = far;
+            self.speed = 0.0;
+            self.gathering = 0.0;
+        }
+        there
+    }
+
     /// Starts doing something new, from `x`.
     fn start(&mut self, doing: Doing, x: f32) {
         if let Doing::Rising { to, .. } = doing
             && (to - x).abs() > 1.0
         {
             self.face = (to - x).signum();
+        }
+        if let Doing::Walking { .. } = doing {
+            self.walked = 0.0;
+            self.speed = 0.0;
+            self.gathering = 0.0;
         }
         self.doing = doing;
         self.since = 0.0;
@@ -438,30 +545,31 @@ impl Cat {
 
     /// Whether it is up and doing something, so it should be drawn smoothly.
     pub fn busy(&self) -> bool {
-        self.doing != Doing::Asleep || self.up > 0.01 || self.stretch > 0.01
+        self.doing != Doing::Asleep || self.up() > 0.01 || self.stretch > 0.01
     }
 
     /// How tall it is right now, where a hand can take hold of it, in
     /// logical pixels.
     pub fn height(&self) -> f32 {
-        40.0 + 20.0 * self.up
+        40.0 + 20.0 * self.up()
     }
 
-    /// How it is lying or standing, for the shader: how far up, how far into
-    /// a stretch, how far through a stride and how its breath swells; its
-    /// tail and ear in degrees, how open its eyes are and which way it faces;
-    /// and how petted and how held it is.
+    /// How it is lying or standing, for the shader: how far up its front is,
+    /// how far into a stretch, how far through a stride and how its breath
+    /// swells; its tail and ear in degrees, how open its eyes are and which
+    /// way it faces; how petted and how held it is, how hard it is striding,
+    /// and how far up its hindquarters are.
     pub fn shape(&self) -> [[f32; 4]; 3] {
-        let tail = self.tail * TAIL * (TAU * self.tail_phase).sin();
+        // Asleep, the tail tip drifts a little on its own, slowly.
+        let drift = (1.0 - self.up())
+            * (3.0 * (self.asleep * 0.55).sin() + 2.0 * (self.asleep * 0.23).sin());
+        let tail = self.tail * TAIL * (TAU * self.tail_phase).sin() + drift;
+        // A breath is drawn in a little quicker than it is let go.
+        let breath = (self.breath + 0.35 * self.breath.sin()).sin() * self.depth;
         [
-            [
-                self.up,
-                self.stretch,
-                self.stride,
-                self.breath.sin() * self.depth,
-            ],
+            [self.front, self.stretch, self.stride, breath],
             [tail, self.ear, self.eyes, self.facing],
-            [self.pet, self.held, 0.0, 0.0],
+            [self.pet, self.held, self.speed / PACE, self.rear],
         ]
     }
 }
@@ -472,16 +580,7 @@ fn walk(from: f32, to: f32) -> Doing {
     if far < 1.0 {
         return Doing::Settling;
     }
-    Doing::Walking {
-        from,
-        to,
-        span: far / PACE + EASE,
-    }
-}
-
-/// Smoothstep: a start and an end with no jolt.
-fn ease(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
+    Doing::Walking { from, to }
 }
 
 /// `value` eased toward `to` over `dt` seconds with time constant `tau`.
@@ -819,10 +918,63 @@ mod tests {
             most[0] = most[0].max(b[0].abs());
             most[1] = most[1].max(b[1].abs());
         }
-        assert!(most[0] > TAIL * 0.6 && most[0] <= TAIL, "{most:?}");
+        assert!(most[0] > TAIL * 0.6 && most[0] <= TAIL + 5.0, "{most:?}");
         assert!(most[1] > 5.0 && most[1] < 40.0, "{most:?}");
         // Twice a second for twenty seconds, but at most once every six.
         assert!((3..=4).contains(&flicks), "{flicks}");
+    }
+
+    #[test]
+    fn it_gets_up_front_first_and_lies_down_hindquarters_first() {
+        let mut cat = Cat::default();
+        let mut x = spots()[CAT];
+        cat.wake(x, spots(), WIDTH, Light::default());
+        run(&mut cat, &mut x, 30.0, 0.8);
+        assert!(cat.front > cat.rear + 0.1, "{} {}", cat.front, cat.rear);
+        // It starts gently: no part jumps up in the first frames.
+        let mut fresh = Cat::default();
+        fresh.wake(x, spots(), WIDTH, Light::default());
+        run(&mut fresh, &mut x, 30.0, 0.1);
+        assert!(fresh.front < 0.05, "{}", fresh.front);
+
+        let mut cat = Cat {
+            front: 1.0,
+            rear: 1.0,
+            doing: Doing::Settling,
+            ..Cat::default()
+        };
+        run(&mut cat, &mut x, 30.0, 0.8);
+        assert!(cat.rear < cat.front - 0.1, "{} {}", cat.front, cat.rear);
+        run(&mut cat, &mut x, 30.0, 3.0);
+        assert!(cat.up() < 0.02);
+    }
+
+    #[test]
+    fn it_gathers_pace_keeps_it_and_comes_to_a_stop_where_it_meant_to() {
+        let mut cat = Cat::default();
+        let start = 500.0;
+        cat.start(
+            Doing::Walking {
+                from: start,
+                to: start + 120.0,
+            },
+            start,
+        );
+        let mut speeds = Vec::new();
+        let mut x = start;
+        for _ in 0..30 * 12 {
+            run(&mut cat, &mut x, 30.0, 1.0 / 30.0);
+            speeds.push(cat.speed);
+            assert!(x <= start + 120.0 + 1e-3, "overshot to {x}");
+        }
+        assert!(speeds[2] < PACE * 0.2, "lurched off at {}", speeds[2]);
+        let most = speeds.iter().cloned().fold(0.0, f32::max);
+        assert!(most > PACE * 0.9 && most <= PACE + 1e-3, "{most}");
+        // Slowing smoothly: never more than a small change in a frame.
+        for pair in speeds.windows(2) {
+            assert!((pair[1] - pair[0]).abs() < PACE * 0.12, "{pair:?}");
+        }
+        assert!((x - (start + 120.0)).abs() < 1e-3);
     }
 
     #[test]
@@ -832,7 +984,7 @@ mod tests {
             let mut x = spots()[CAT];
             cat.wake(x, spots(), WIDTH, Light::default());
             run(&mut cat, &mut x, fps, 9.0);
-            (x, cat.up)
+            (x, cat.up())
         };
         let (slow, fast) = (walked(15.0), walked(30.0));
         assert!((slow.0 - fast.0).abs() < 4.0, "{slow:?} vs {fast:?}");
