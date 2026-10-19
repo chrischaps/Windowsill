@@ -32,6 +32,7 @@ mod cat;
 mod clock;
 mod config;
 mod dust;
+mod film;
 mod glass;
 mod hold;
 mod light;
@@ -1247,6 +1248,20 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(frames) = args.bench {
         return bench::run(frames, args.budget);
+    }
+    if let (Some(file), Some(length)) = (&args.film, args.length) {
+        return film::run(&film::Shot {
+            file,
+            length,
+            day_in: args.day_in,
+            at: args.at.unwrap_or((12, 0)),
+            place: args.latitude.zip(args.longitude).map(|(latitude, longitude)| sun::Place {
+                latitude,
+                longitude,
+            }),
+            music: args.music.unwrap_or_default(),
+            wake: args.wake,
+        });
     }
 
     tracing::info!("Windowsill {}", env!("CARGO_PKG_VERSION"));
