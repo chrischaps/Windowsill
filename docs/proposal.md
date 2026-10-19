@@ -87,7 +87,7 @@ v1 ends at M4. After that, everything is optional and can ship one at a time.
 
 Open questions:
 
-- [x] One sill with fixed objects, or a small choice (plant, cat, bonsai)? A fixed set: plant, jar and candle (#33). A choice can come with the presets.
+- [x] One sill with fixed objects, or a small choice (plant, cat, bonsai)? A fixed set: plant, jar and candle (#33). A choice can come with the presets. A cat joined them later (#64).
 - [ ] Should anything ever invite a pause, such as the light turning briefly on the hour? It risks breaking "never asks".
 - [ ] Windows only for v1, or keep macOS in mind from the start? Seoul's capture already supports CoreAudio.
 - [ ] Location: ask for a city once, or work out a rough location from the Windows time zone?

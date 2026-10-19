@@ -16,7 +16,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::Wake;
 use crate::light::{self, Room};
-use crate::objects::{Candle, Jar, Plant};
+use crate::objects::{Candle, Cat, Jar, Plant};
 use crate::palette::{Look, Palette};
 use crate::sill::{self, Ease};
 use crate::sky::Sky;
@@ -47,10 +47,11 @@ pub struct Config {
     pub fps_music: u32,
     /// The jar lid's colours, as `"#rrggbb"` in the file.
     pub palette: Palette,
-    /// The three things on the sill: where each stands until it is moved, and its colours.
+    /// The things on the sill: where each stands until it is moved, and its colours.
     pub plant: Plant,
     pub jar: Jar,
     pub candle: Candle,
+    pub cat: Cat,
     /// The room's light at each height of the sun, as `[[sky]]` tables.
     /// Any given replace the whole default set.
     pub sky: Sky,
@@ -71,6 +72,7 @@ impl Default for Config {
             plant: Plant::default(),
             jar: Jar::default(),
             candle: Candle::default(),
+            cat: Cat::default(),
             sky: Sky::default(),
             ease: Ease::default(),
         }
@@ -103,6 +105,7 @@ impl Config {
             plant: self.plant,
             jar: self.jar,
             candle: self.candle,
+            cat: self.cat,
         }
     }
 
@@ -157,6 +160,7 @@ impl Config {
             ("plant", self.plant.at),
             ("jar", self.jar.at),
             ("candle", self.candle.at),
+            ("cat", self.cat.at),
         ] {
             if !(0.0..=1.0).contains(&at) {
                 bail!("{name}.at {at} is not between 0 and 1");
@@ -311,6 +315,9 @@ mod tests {
         assert!(near(example.jar.glass, jar.glass) && near(example.jar.water, jar.water));
         assert_eq!(example.candle.at, candle.at);
         assert!(near(example.candle.wax, candle.wax) && near(example.candle.flame, candle.flame));
+        let cat = Cat::default();
+        assert_eq!(example.cat.at, cat.at);
+        assert!(near(example.cat.fur, cat.fur) && near(example.cat.bib, cat.bib));
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
         assert_eq!(example.ease, Ease::default());
         let (e, d) = (&example.sky.0, &Sky::default().0);

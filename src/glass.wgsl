@@ -1,5 +1,5 @@
-// The sill: a potted plant, a small glass jar and a candle standing on the
-// taskbar's top edge, which is the strip's bottom edge, in the light of the
+// The sill: a potted plant, a small glass jar, a candle and a sleeping cat on
+// the taskbar's top edge, which is the strip's bottom edge, in the light of the
 // real sky. Everything else is clear, so the desktop shows through all round
 // them. Every shape is a signed distance in logical pixels, so the things are
 // equally crisp at any DPI. Colours leave here premultiplied.
@@ -34,8 +34,7 @@ struct Sill {
     // degrees the plant's leaves lean to the right, and in .w how bright the
     // jar's ring of light is, from 0 to 1.
     music: vec4<f32>,
-    // Where the plant, jar and candle stand, in physical pixels across, and in
-    // .w which of them (0, 1 or 2) is in front: the last one picked up.
+    // Where the plant, jar, candle and cat stand, in physical pixels across.
     places: vec4<f32>,
     // How high each is lifted off the edge by a hand, in logical pixels.
     lift: vec4<f32>,
@@ -43,8 +42,20 @@ struct Sill {
     tip: vec4<f32>,
     // How far what is loose inside each trails as it is carried, in degrees to
     // the right: the plant's leaves, the jar's water and the candle's flame.
-    // In .w, how fast the music is swinging the leaves, in degrees a second.
     swing: vec4<f32>,
+    // Which thing (0 to 3) is in front: the last one picked up. In .y, how
+    // fast the music is swinging the leaves, in degrees a second.
+    order: vec4<f32>,
+    // How the cat lies or stands. [0]: how far up its front is, from 0 curled
+    // to 1 standing; how far into a stretch; how far through a stride; and
+    // its breath, -1 to 1 and deeper when petted. [1]: how far its tail tip
+    // swings and its ear is flicked, in degrees; how open its eyes are; and
+    // how far its body is turned, as the cosine of the turn: 1 facing right,
+    // -1 left. [2]: how petted it is, how loose
+    // it hangs in a hand, how hard it is striding, from 0 to 1, and how far up
+    // its hindquarters are. [3]: how far its head is turned, as the cosine of
+    // the turn: 1 facing right, -1 left.
+    cat: array<vec4<f32>, 4>,
     // The things on the sill, from windowsill.toml. Only .rgb is used.
     pot: vec4<f32>,
     leaf: vec4<f32>,
@@ -52,6 +63,8 @@ struct Sill {
     water: vec4<f32>,
     wax: vec4<f32>,
     flame: vec4<f32>,
+    fur: vec4<f32>,
+    bib: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> sill: Sill;
@@ -296,7 +309,7 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
         let i = order[k];
         let len = lengths[i];
         let reach = len / 34.0;
-        let trail = sill.swing.w * 0.14 * reach * reach;
+        let trail = sill.order.y * 0.14 * reach * reach;
         let angle = radians(angles[i] + lean * (0.55 + 0.45 * reach) - trail);
         let dir = vec2<f32>(sin(angle), cos(angle));
         let across = vec2<f32>(dir.y, -dir.x);
@@ -449,18 +462,439 @@ fn candle(under: vec4<f32>, p: vec2<f32>, tip: f32, trail: f32) -> vec4<f32> {
 }
 
 // Where the candle's flame is, in logical pixels.
-fn flame_at(x: vec3<f32>) -> vec2<f32> {
+fn flame_at(x: vec4<f32>) -> vec2<f32> {
     return vec2<f32>(x.z + 0.5, sill.lift.z + BASE + 24.0 * sill.candle.y + 6.0);
 }
 
 // The candle's light on the things near it, warmed in a wide pool that
 // breathes with the flame. It lights what is there rather than glowing in the
 // air, so the desktop stays clear.
-fn candlelight(layer: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
+fn candlelight(layer: vec4<f32>, p: vec2<f32>, x: vec4<f32>) -> vec4<f32> {
     let d = length((p - flame_at(x)) * vec2<f32>(1.0, 1.6));
     let pool = sill.candle.x * (0.55 + 0.03 * sill.candle.z) * exp(-d * d / (2.0 * 44.0 * 44.0));
     let warm = sill.flame.rgb * pool;
     return vec4<f32>(layer.rgb * (1.0 + warm * 2.6) + warm * 0.06 * layer.a, layer.a);
+}
+
+// ---- The cat --------------------------------------------------------------
+//
+// One body that gets up and lies down, rather than a drawing for each pose:
+// how far up it is moves every part from curled, head tucked against its
+// flank and tail wrapped round, to standing, head up and tail high. It is a
+// tuxedo: black, with a white shirt front, socks, muzzle and blaze.
+// Laid out side on, facing right, and turned about its upright axis to face
+// left, face toward the room on the way round.
+
+// An ellipse with half-axes `r` (after Inigo Quilez), near enough at this size.
+fn sd_ellipse(p: vec2<f32>, r: vec2<f32>) -> f32 {
+    let k0 = length(p / r);
+    let k1 = max(length(p / (r * r)), 1e-4);
+    return k0 * (k0 - 1.0) / k1;
+}
+
+// `v` turned `a` radians anticlockwise.
+fn turn(v: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
+}
+
+// Smooth value noise from 0 to 1, about one bump per unit.
+fn noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash(i);
+    let b = hash(i + vec2<f32>(1.0, 0.0));
+    let c = hash(i + vec2<f32>(0.0, 1.0));
+    let d = hash(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// A limb from `a` to `b`, `ra` thick at `a` and `rb` at `b`: how far `p` is
+// from it, and in .yz which way its round surface faces there, as a slant
+// from -1 to 1 each way.
+fn limb(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, ra: f32, rb: f32) -> vec3<f32> {
+    let pa = p - a;
+    let ba = b - a;
+    let t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
+    let r = mix(ra, rb, t);
+    let to = pa - ba * t;
+    return vec3<f32>(length(to) - r, to / max(r, 1e-3));
+}
+
+// Two shapes as one, blended over `k`, each with the way its surface faces.
+fn join(a: vec3<f32>, b: vec3<f32>, k: f32) -> vec3<f32> {
+    let w = clamp(0.5 + (b.x - a.x) / (2.0 * k), 0.0, 1.0);
+    return vec3<f32>(smin(a.x, b.x, k), mix(b.yz, a.yz, w));
+}
+
+// The nearer of two shapes, with the way its surface faces.
+fn nearer(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return select(b, a, a.x < b.x);
+}
+
+// Where a leg's middle joint is, for a hip at `hip`, a paw at `paw`, upper
+// and lower lengths `l1` and `l2`, bending forward (`bend` 1) or back (-1).
+fn joint(hip: vec2<f32>, paw: vec2<f32>, l1: f32, l2: f32, bend: f32) -> vec2<f32> {
+    let span = paw - hip;
+    let d = clamp(length(span), 1e-3, l1 + l2 - 1e-3);
+    let dir = span / max(length(span), 1e-3);
+    let a = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+    let h = sqrt(max(l1 * l1 - a * a, 0.0));
+    return hip + dir * a + vec2<f32>(-dir.y, dir.x) * h * bend;
+}
+
+// How much of a pixel soft fur covers, `d` logical px from its edge: a touch
+// softer than a hard edge, as fur is.
+fn fluff(d: f32) -> f32 {
+    return clamp(0.5 - d * sill.scale / 1.5, 0.0, 1.0);
+}
+
+// Fur of colour `rgb` whose round surface faces `n2` (a slant from -1 to 1
+// each way, on the screen), lit by the room from above on the window's side,
+// with a broad soft sheen where it turns toward the light, and the sun
+// behind it, and the moon, catching its edge on their side. Dark fur shows
+// its shape mostly by its sheen, so the sheen is stronger the darker it is.
+fn coat(rgb: vec3<f32>, n2: vec2<f32>) -> vec3<f32> {
+    let k = min(dot(n2, n2), 1.0);
+    let n = vec3<f32>(n2, sqrt(1.0 - k));
+    let key = normalize(vec3<f32>(room_side() * 0.9, 0.8, 0.8));
+    let diffuse = 0.4 + 0.72 * max(dot(n, key), 0.0);
+    let half = normalize(key + vec3<f32>(0.0, 0.0, 1.0));
+    let sheen = pow(max(dot(n, half), 0.0), 7.0);
+    let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let edge = k * k;
+    let sun_edge = edge * clamp(0.5 + 1.5 * n.x * sun_side(), 0.0, 1.0) * shine();
+    let moon_edge = edge * clamp(0.5 + 1.5 * n.x * moon_side(), 0.0, 1.0) * moon();
+    return rgb * diffuse
+        + vec3<f32>(sheen * mix(0.13, 0.04, lum))
+        + sunlight() * sun_edge * mix(0.45, 0.2, lum)
+        + MOON * moon_edge * 0.3;
+}
+
+// Fur's grain: fine strands running along `q`'s x, darker and lighter by a
+// little, more on dark fur, where it shows as sheen.
+fn grain(rgb: vec3<f32>, q: vec2<f32>) -> vec3<f32> {
+    let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let strands = noise(vec2<f32>(q.x * 0.9, q.y * 4.5)) * 0.7 + noise(vec2<f32>(q.x * 2.1, q.y * 9.0)) * 0.3;
+    return rgb * (1.0 + (strands - 0.5) * mix(0.5, 0.12, lum));
+}
+
+// How ragged fur's edge is at `p`, in layout units: a few tufts, never more
+// than about a pixel.
+fn tufts(p: vec2<f32>) -> f32 {
+    return (noise(p * 1.7) - 0.5) * 0.35 + (noise(p * 4.3 + 7.1) - 0.5) * 0.2;
+}
+
+// How much bigger the cat is drawn than the units its shapes are laid out in.
+// It must match `carry::FOOT` and `cat::Cat::height`, which say how much room
+// it takes on the sill.
+const CAT_SIZE: f32 = 2.5;
+
+// `v`, a point laid out side on as if the cat faced right, `z` in front of
+// its middle (toward the room), seen once it has turned to cosine `c` and
+// sine `s` about its upright axis: 1 and 0 facing right, -1 and 0 facing
+// left, and between, its face coming round toward the room.
+fn seen(v: vec2<f32>, z: f32, c: f32, s: f32) -> vec2<f32> {
+    return vec2<f32>(v.x * c - z * s, v.y);
+}
+
+// How wide something `along` long and `across` deep looks, turned to `c`, `s`.
+fn breadth(along: f32, across: f32, c: f32, s: f32) -> f32 {
+    return sqrt(along * along * c * c + across * across * s * s);
+}
+
+fn cat(under: vec4<f32>, q: vec2<f32>) -> vec4<f32> {
+    var colour = under;
+    // Its front and its hindquarters get up and lie down a little apart.
+    let up_f = smoothstep(0.0, 1.0, sill.cat[0].x);
+    let up_r = smoothstep(0.0, 1.0, sill.cat[2].w);
+    let up = 0.5 * (up_f + up_r);
+    let reach = sill.cat[0].y;
+    let stride = sill.cat[0].z;
+    let breath = sill.cat[0].w;
+    let flick = radians(sill.cat[1].y);
+    let eyes = sill.cat[1].z;
+    let pet = sill.cat[2].x;
+    let held = sill.cat[2].y;
+    let gait = sill.cat[2].z;
+    let fur = sill.fur.rgb;
+    let bib = sill.bib.rgb;
+    let tau = 6.2831853;
+
+    // Which way its body and its head are turned. It turns round about its
+    // upright axis, face toward the room, its head a little ahead of its
+    // body; end on it is as narrow as a cat is, and no narrower.
+    let c = clamp(sill.cat[1].w, -1.0, 1.0);
+    let s = sqrt(max(1.0 - c * c, 0.0));
+    let ch = clamp(sill.cat[3].x, -1.0, 1.0);
+    let sh = sqrt(max(1.0 - ch * ch, 0.0));
+
+    // Drawn CAT_SIZE times larger than it is laid out. Every distance is
+    // scaled back by `squeeze` before it is covered, so edges stay soft.
+    let p = q / CAT_SIZE;
+    let squeeze = CAT_SIZE;
+
+    // Its body, curled low and long or carried high on its legs. Getting up,
+    // its front rises first and the body tips back; a stretch tips it
+    // forward, chest down and rump up. Walking, it dips a little at each step.
+    // It swells as it breathes. Everything is laid out side on first (the
+    // names ending in 0), then turned the way it faces.
+    let tilt0 = -0.22 * reach + 0.3 * (up_f - up_r);
+    let tilt = tilt0 * c;
+    let bob = 0.18 * gait * cos(2.0 * tau * stride);
+    let centre0 = vec2<f32>(mix(-2.0, -1.0, up), mix(7.4, 12.5, up) - 2.0 * reach - bob);
+    let centre = seen(centre0, 0.0, c, s);
+    let r0 = vec2<f32>(
+        mix(12.8, 11.5, up) + 1.5 * held,
+        mix(7.4, 5.0, up) + 0.4 * breath * (1.0 - 0.6 * up),
+    );
+    let r = vec2<f32>(breadth(r0.x, mix(7.0, 4.6, up), c, s), r0.y);
+    let b = turn(p - centre, -tilt);
+    let body = vec3<f32>(sd_ellipse(b, r), turn(b / r, tilt));
+    // Its hindquarters, round over the thigh.
+    let haunch0 = centre0 + turn(vec2<f32>(-r0.x * 0.55, -r0.y * 0.05), tilt0);
+    let hr0 = vec2<f32>(mix(5.5, 4.4, up), mix(5.5, 4.8, up));
+    let hr2 = vec2<f32>(breadth(hr0.x, hr0.x * 0.9, c, s), hr0.y);
+    let hb = p - seen(haunch0, 0.0, c, s);
+    let haunch = vec3<f32>(sd_ellipse(hb, hr2), hb / hr2);
+
+    // Its head: tucked against its front asleep, lifted a little when petted,
+    // held up when it stands, low and forward in a stretch, and nodding a
+    // little with each step. What is on its head turns with the head.
+    let nod = 0.22 * gait * sin(2.0 * tau * stride + 0.6);
+    let head0 = vec2<f32>(
+        mix(9.6, 12.5, up_f) + 3.0 * reach,
+        mix(7.6, 18.5, up_f) - 8.0 * reach + 1.2 * pet * (1.0 - up_f) - nod,
+    );
+    let head_at = seen(head0, 0.0, c, s);
+    let hr = mix(5.6, 4.8, up_f);
+    let snout = head_at + seen(vec2<f32>(hr * 0.72, -hr * 0.38), 0.0, ch, sh);
+    let skull = vec3<f32>(length(p - head_at) - hr, (p - head_at) / hr);
+    let muzzle = vec3<f32>(length(p - snout) - hr * 0.42, (p - snout) / (hr * 0.42));
+    let head = join(skull, muzzle, 1.6);
+    let shoulder0 = centre0 + turn(vec2<f32>(r0.x * 0.55, r0.y * 0.45), tilt0);
+    let shoulder = seen(shoulder0, 0.0, c, s);
+    let neck_top = seen(head0 - vec2<f32>(1.0, 1.0), 0.0, c, s);
+    let neck = limb(p, shoulder, neck_top, mix(2.6, 3.2, up_f), mix(2.3, 2.7, up_f));
+
+    // Four legs, each a hip, a middle joint and a paw: the elbow and wrist in
+    // front, the hock behind. Lying down they fold up out of sight. Walking,
+    // each paw is set down and stays put on the ground while the body passes
+    // over it, then lifts and swings forward in an arc, in a cat's four-beat
+    // walk: near hind, near fore, far hind, far fore. Standing still, the
+    // paws come to rest under the hips. In a stretch the front paws reach
+    // forward. Which pair is nearer changes as it turns round; end on, both
+    // pairs are as near as each other, so nothing jumps.
+    var hips = array<f32, 4>(6.0, 4.2, -7.2, -8.8);
+    var phases = array<f32, 4>(0.25, 0.75, 0.0, 0.5);
+    let duty = 0.62;
+    // The distance a paw covers on the ground in a stride, so it never slides.
+    let reach_on_ground = duty * 32.0 / CAT_SIZE;
+    let walking = smoothstep(0.0, 0.15, gait);
+    let apart = mix(3.2, 2.4, up);
+    var near_legs = vec3<f32>(1e3, 0.0, 0.0);
+    var far_legs = vec3<f32>(1e3, 0.0, 0.0);
+    for (var k = 0; k < 4; k++) {
+        let front = k < 2;
+        let z = select(-apart, apart, k % 2 == 0);
+        let out = smoothstep(0.15, 0.9, select(sill.cat[2].w, sill.cat[0].x, front));
+        let hip0 = centre0 + turn(vec2<f32>(hips[k] + 1.0, -r0.y * 0.3), tilt0);
+        let phase = fract(stride + phases[k]);
+        var dx = 0.0;
+        var lift = 0.0;
+        if phase < duty {
+            dx = reach_on_ground * (0.5 - phase / duty);
+        } else {
+            let t = (phase - duty) / (1.0 - duty);
+            dx = reach_on_ground * (smoothstep(0.0, 1.0, t) - 0.5);
+            lift = select(1.4, 1.8, front) * sin(3.1415927 * t);
+        }
+        dx = dx * walking + select(-1.5, 7.0, front) * reach;
+        let hip = seen(hip0, z, c, s);
+        let ground = seen(vec2<f32>(hip0.x + dx, 0.9 + lift * walking), z, c, s);
+        let paw = mix(hip - vec2<f32>(0.0, 0.3), ground, out);
+        let l1 = select(5.2, 5.6, front) * out + 0.2;
+        let l2 = select(6.0, 5.0, front) * out + 0.2;
+        let mid = joint(hip, paw, l1, l2, select(-1.0, 0.6, front) * c);
+        let upper = limb(p, hip, mid, select(2.5, 2.0, front), select(1.5, 1.4, front));
+        let lower = limb(p, mid, paw, select(1.3, 1.35, front), 1.15);
+        let toe = paw + vec2<f32>(0.5 * c, 0.0);
+        let foot_r = vec2<f32>(breadth(1.6, 1.1, c, s), 1.0);
+        let foot = vec3<f32>(sd_ellipse(p - toe, foot_r), (p - toe) / foot_r);
+        let leg = nearer(nearer(upper, lower), foot);
+        if z * c >= 0.0 {
+            near_legs = nearer(near_legs, leg);
+        } else {
+            far_legs = nearer(far_legs, leg);
+        }
+    }
+    // The nearer legs are lit like the body and the further ones are in its
+    // shade, the two meeting halfway when it is end on.
+    let near_shade = mix(0.62, 1.0, smoothstep(-0.3, 0.3, abs(c)));
+    let far_shade = mix(0.62, 1.0, smoothstep(-0.3, 0.3, -abs(c)));
+    // White socks, up past the ankle, with a soft furry line.
+    let socks = (1.0 - smoothstep(2.4, 3.6, p.y + (noise(p * 2.0) - 0.5) * 0.8)) * smoothstep(0.15, 0.6, up);
+
+    // Its tail, from the rump: wrapped round toward its front paws asleep,
+    // held high with a crook at the tip when it stands, and swaying a little
+    // with its walk. The tip keeps time with the beat, drifts in its sleep,
+    // and curls up a little more when it is petted.
+    let base0 = centre0 + turn(vec2<f32>(-r0.x * 0.92, mix(-0.3, 0.4, up) * r0.y), tilt0);
+    var curled = array<vec2<f32>, 5>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(5.0, -2.6), vec2<f32>(10.0, -3.1),
+        vec2<f32>(14.5, -2.8), vec2<f32>(17.5, -1.6 + 1.2 * pet),
+    );
+    var high = array<vec2<f32>, 5>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(-3.5, 2.5), vec2<f32>(-5.5, 7.0),
+        vec2<f32>(-5.0, 11.5), vec2<f32>(-2.8, 13.5),
+    );
+    var tail0: array<vec2<f32>, 5>;
+    let beat = radians(sill.cat[1].x) + 0.12 * gait * sin(tau * stride);
+    for (var k = 0; k < 5; k++) {
+        tail0[k] = base0 + mix(curled[k], high[k], up);
+        if k >= 2 {
+            let pivot = tail0[k - 1];
+            tail0[k] = pivot + turn(tail0[k] - pivot, beat * (f32(k) - 1.0) * 0.5);
+        }
+    }
+    var tail = vec3<f32>(1e3, 0.0, 0.0);
+    for (var k = 0; k < 4; k++) {
+        let ra = mix(1.9, 1.15, f32(k) / 4.0);
+        let rb = mix(1.9, 1.15, f32(k + 1) / 4.0);
+        tail = nearer(tail, limb(p, seen(tail0[k], 0.0, c, s), seen(tail0[k + 1], 0.0, c, s), ra, rb));
+    }
+
+    let ragged = tufts(p);
+
+    // Behind it all: the far legs, in shade.
+    let far_d = (far_legs.x + ragged) * squeeze;
+    let far_rgb = coat(grain(mix(fur, bib, socks), p.yx), far_legs.yz) * far_shade;
+    colour = over(colour, far_rgb, fluff(far_d));
+
+    // The tail's colour, and the soft shade it casts where it lies on the body.
+    let tail_d = (tail.x + ragged * 0.7) * squeeze;
+    let tail_rgb = coat(grain(fur, p * 1.3), tail.yz);
+    if up >= 0.5 {
+        colour = over(colour, tail_rgb, fluff(tail_d));
+    }
+
+    // The body, haunch, neck and near legs as one: black, with a white shirt
+    // front down its chest and white socks, the line between them furry.
+    let torso = join(join(join(body, haunch, 2.5), neck, 2.5), near_legs, 1.2);
+    let torso_d = (torso.x + ragged) * squeeze;
+    let front0 = shoulder0 + turn(vec2<f32>(1.2, -2.2), tilt0);
+    let shirt_r = vec2<f32>(breadth(3.4, 3.2, c, s), mix(3.6, 4.6, up_f));
+    let shirt_d = sd_ellipse(p - seen(front0, 0.0, c, s), shirt_r) + (noise(p * 1.8) - 0.5) * 0.7;
+    let shirt = 1.0 - smoothstep(-0.5, 0.5, shirt_d);
+    let on_legs = 1.0 - smoothstep(-0.3, 0.3, near_legs.x - min(body.x, neck.x));
+    let white = max(shirt, socks * on_legs);
+    var torso_rgb = grain(mix(fur, bib, white), mix(b, p.yx, on_legs));
+    torso_rgb = coat(torso_rgb, torso.yz) * mix(1.0, near_shade, on_legs);
+    // Shade where the head rests against it, and under a curled tail.
+    torso_rgb *= mix(0.55, 1.0, smoothstep(-0.5, 2.5, head.x));
+    torso_rgb *= mix(1.0, mix(0.6, 1.0, smoothstep(0.0, 1.8, tail.x)), 1.0 - step(0.5, up));
+    colour = over(colour, torso_rgb, fluff(torso_d));
+
+    // Curled up, its white front paws peep out beneath its chin.
+    if up < 0.5 {
+        let paws_at = seen(vec2<f32>(9.0, 1.5), 0.0, c, s);
+        let paws_r = vec2<f32>(breadth(3.6, 2.8, c, s), 1.5);
+        let paws = sd_ellipse(p - paws_at, paws_r);
+        let paw_rgb = coat(grain(bib, p.yx), (p - paws_at) / paws_r);
+        colour = over(colour, paw_rgb * mix(0.6, 1.0, smoothstep(-0.5, 2.0, head.x)), fluff((paws + ragged * 0.5) * squeeze) * (1.0 - smoothstep(0.3, 0.5, up)));
+    }
+
+    // Its ears, each where it sits on the head as the head turns: side on
+    // one stands a little behind the other; face on they stand either side,
+    // leaning a little out. A kick flicks back whichever is nearer. The
+    // further one is drawn behind the head and in its shade.
+    let ear_lie = mix(-0.55, -0.12, up_f);
+    var ear_d = array<f32, 2>(1e3, 1e3);
+    var inner_d = array<f32, 2>(1e3, 1e3);
+    var ear_z = array<f32, 2>(0.0, 0.0);
+    for (var k = 0; k < 2; k++) {
+        let sgn = select(-1.0, 1.0, k == 0);
+        let nearness = smoothstep(-1.0, 1.0, sgn * ch);
+        let x = mix(-0.45, 0.15, nearness) * hr;
+        let z = sgn * 0.45 * hr;
+        let at = head_at + seen(vec2<f32>(x, 0.75 * hr), z, ch, sh);
+        let lean = (ear_lie + mix(0.25, flick, nearness)) * ch + sgn * 0.3 * sh;
+        let eq = turn(p - at, -lean) - vec2<f32>(0.0, 2.0);
+        ear_d[k] = (sd_trapezoid(eq, 2.3, 0.25, 2.3) + ragged * 0.4) * squeeze;
+        inner_d[k] = (sd_trapezoid(eq - vec2<f32>(0.2 * ch, -0.4), 1.2, 0.1, 1.5) + 0.25) * squeeze;
+        ear_z[k] = x * sh + z * ch;
+    }
+    let near_ear = select(1, 0, ear_z[0] >= ear_z[1]);
+    let far_ear = 1 - near_ear;
+    let ear_rgb = coat(fur, vec2<f32>(0.25 * ch, 0.4));
+    let inner_rgb = mix(fur, vec3<f32>(0.62, 0.42, 0.42), 0.45);
+    let far_ear_shade = mix(0.7, 1.0, smoothstep(-0.45 * hr, 0.45 * hr, ear_z[far_ear]));
+    colour = over(colour, ear_rgb * far_ear_shade, fluff(ear_d[far_ear]));
+    colour = over(colour, inner_rgb * far_ear_shade, fluff(inner_d[far_ear]) * 0.85 * smoothstep(-0.3 * hr, 0.1 * hr, ear_z[far_ear]));
+
+    // Its head over the body: black, with a white muzzle and chin and a white
+    // blaze up the front of its face, the edges between them soft.
+    let head_d = (head.x + ragged * 0.8) * squeeze;
+    let h = p - head_at;
+    let brow = head_at + seen(vec2<f32>(hr * 0.78, hr * 0.32), 0.0, ch, sh);
+    let blaze = 1.0 - smoothstep(-0.4, 0.4, sd_segment(p, snout, brow) - 0.6 + (noise(p * 2.0) - 0.5) * 0.5);
+    let chin = 1.0 - smoothstep(-0.6, 0.6, muzzle.x + (noise(p * 2.2 + 3.0) - 0.5) * 0.8);
+    var face = grain(mix(fur, bib, max(chin, blaze)), vec2<f32>(atan2(h.y, h.x) * 3.0, length(h) * 0.6));
+    face = coat(face, head.yz);
+    colour = over(colour, face, fluff(head_d));
+
+    colour = over(colour, ear_rgb, fluff(ear_d[near_ear]));
+    colour = over(colour, inner_rgb, fluff(inner_d[near_ear]) * 0.85);
+
+    // Asleep, its tail lies round in front of it.
+    if up < 0.5 {
+        colour = over(colour, tail_rgb, fluff(tail_d));
+    }
+
+    // Its eyes, each shown as far as it faces the room: side on only the
+    // nearer, face on both. Asleep, only the faint crease of a closed lid.
+    // Open, green-gold with a slit for a pupil, and a glint that the
+    // candle's light makes brighter.
+    for (var k = 0; k < 2; k++) {
+        let sgn = select(-1.0, 1.0, k == 0);
+        let eye_at = head_at + seen(vec2<f32>(hr * 0.38, hr * 0.12), sgn * 0.42 * hr, ch, sh);
+        let shown = smoothstep(0.0, 0.2 * hr, hr * 0.38 * sh + sgn * 0.42 * hr * ch);
+        if shown < 0.01 {
+            continue;
+        }
+        let ey = p - eye_at;
+        let shut = max(abs(length(ey - vec2<f32>(0.0, 1.4)) - 1.6) - 0.2, ey.y - 0.3) * squeeze;
+        colour = over(colour, coat(mix(fur, bib, 0.18), vec2<f32>(0.1 * ch, 0.3)), cover(shut) * 0.8 * shown * (1.0 - smoothstep(0.08, 0.3, eyes)));
+        if eyes > 0.02 {
+            let wide = 1.25 * mix(0.75, 1.0, shown);
+            let open = sd_ellipse(ey, vec2<f32>(wide, max(eyes, 0.05))) * squeeze;
+            let iris = mix(vec3<f32>(0.5, 0.6, 0.2), vec3<f32>(0.8, 0.82, 0.36), smoothstep(-1.0, 1.0, ey.y));
+            colour = over(colour, iris, cover(open) * shown);
+            let pupil = sd_ellipse(ey - vec2<f32>(0.2 * ch, 0.0), vec2<f32>(0.35, max(eyes * 0.9, 0.04))) * squeeze;
+            colour = over(colour, vec3<f32>(0.03, 0.03, 0.03), cover(pupil) * shown);
+            let glint = (length(ey - vec2<f32>(0.45 * ch, 0.3 * eyes)) - 0.3) * squeeze;
+            colour = over(colour, vec3<f32>(1.0), cover(glint) * shown * eyes * (0.45 + 0.4 * sill.candle.x));
+        }
+    }
+
+    // A pink nose at the end of the white muzzle, and fine whiskers either
+    // side of it, which spread out to both sides as it turns to face the room.
+    let nose_at = head_at + seen(vec2<f32>(hr * 1.08, -hr * 0.28), 0.0, ch, sh);
+    let nose = (length(p - nose_at) - 0.6) * squeeze;
+    colour = over(colour, vec3<f32>(0.76, 0.5, 0.52), cover(nose));
+    let whisker_root = head_at + seen(vec2<f32>(hr * 0.82, -hr * 0.46), 0.0, ch, sh);
+    var whiskers = 1e3;
+    for (var k = 0; k < 6; k++) {
+        let row = f32(k % 3);
+        let sgn = select(-1.0, 1.0, k < 3);
+        let a = radians(-14.0 + 12.0 * row) - 0.05 * row * row;
+        let tip = whisker_root + seen(vec2<f32>(cos(a), sin(a)) * (5.5 - 0.6 * row), sgn * 4.0, ch, sh);
+        whiskers = min(whiskers, sd_segment(p, whisker_root, tip));
+    }
+    let whisker_d = whiskers * squeeze - 0.3;
+    return over(colour, bib * 0.95, cover(whisker_d) * 0.4);
 }
 
 // ---- The dust -------------------------------------------------------------
@@ -504,7 +938,7 @@ fn motes(p: vec2<f32>) -> f32 {
 // The dust in the air behind the things, where light falls on it: the sun's,
 // in a soft pool about each thing it lights, and the candle's close round its
 // flame.
-fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
+fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec4<f32>) -> vec4<f32> {
     let stir = sill.music.x;
     if stir < 0.002 {
         return colour;
@@ -529,9 +963,9 @@ fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
 
 // ---- The whole sill -------------------------------------------------------
 
-// Lays thing `i` (0 the plant, 1 the jar, 2 the candle) over `colour`, standing
-// at `x`, lifted, tipped and trailing as the hand has it.
-fn thing(colour: vec4<f32>, i: i32, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
+// Lays thing `i` (0 the plant, 1 the jar, 2 the candle, 3 the cat) over
+// `colour`, standing at `x`, lifted, tipped and trailing as the hand has it.
+fn thing(colour: vec4<f32>, i: i32, p: vec2<f32>, x: vec4<f32>) -> vec4<f32> {
     let foot_at = vec2<f32>(x[i], sill.lift[i]);
     let q = upright(p - foot_at, sill.tip[i]);
     let empty = vec4<f32>(0.0);
@@ -550,10 +984,17 @@ fn thing(colour: vec4<f32>, i: i32, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
                 return under_layer(colour, layer);
             }
         }
-        default {
+        case 2 {
             // The candle grades its own wax, and its flame makes its own light.
             if abs(p.x - x.z) < 60.0 {
                 return under_layer(colour, candle(empty, q, sill.tip.z, sill.swing.z));
+            }
+        }
+        default {
+            if abs(p.x - x.w) < 100.0 {
+                let drawn = cat(empty, q);
+                let layer = candlelight(vec4<f32>(graded(drawn.rgb), drawn.a), p, x);
+                return under_layer(colour, layer);
             }
         }
     }
@@ -567,10 +1008,10 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<f32>(pixel.x, up) / sill.scale;
     // Each thing stands on a whole physical pixel, so it draws the same way
     // wherever it is put.
-    let x = floor(sill.places.xyz) / sill.scale;
+    let x = floor(sill.places) / sill.scale;
 
     // Most of the strip is nowhere near anything, and stays clear.
-    let gap = min(min(abs(p.x - x.x), abs(p.x - x.y)), abs(p.x - x.z));
+    let gap = min(min(abs(p.x - x.x), abs(p.x - x.y)), min(abs(p.x - x.z), abs(p.x - x.w)));
     if gap > NEAR {
         return vec4<f32>(0.0);
     }
@@ -579,10 +1020,11 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     colour = foot(colour, p, x.x, 12.0, sill.lift.x);
     colour = foot(colour, p, x.y, 11.0, sill.lift.y);
     colour = foot(colour, p, x.z, 7.5, sill.lift.z);
+    colour = foot(colour, p, x.w, mix(35.0, 27.0, sill.cat[0].x), sill.lift.w);
 
-    // The one last picked up in front, the other two in their usual order.
-    let front = i32(sill.places.w);
-    for (var i = 0; i < 3; i++) {
+    // The one last picked up in front, the others in their usual order.
+    let front = i32(sill.order.x);
+    for (var i = 0; i < 4; i++) {
         if i != front {
             colour = thing(colour, i, p, x);
         }

@@ -4,8 +4,10 @@
 //! any other layout. It follows the taskbar through display, DPI and monitor
 //! changes. It never takes focus, and it stays out of the taskbar and Alt+Tab.
 //! It stands a plant, a jar and a candle on the taskbar's top edge in the light
-//! of the real sun, with the desktop clear all round them, and eases in over a
-//! few seconds when it comes to rest. Clicks fall through it everywhere but the
+//! of the real sun, with a cat asleep beside them, the desktop clear all round,
+//! and eases in over a few seconds when it comes to rest. The cat gets up now
+//! and then to lie in the sun, or by the candle after dark; a tap wakes it, and
+//! a pointer resting on it pets it. Clicks fall through it everywhere but the
 //! things themselves, and those a hand can pick up and set down somewhere else
 //! along the edge; they are there again the next day.
 //! It learns where it is from Windows' location service, unless
@@ -26,6 +28,7 @@ mod args;
 mod audio;
 mod bench;
 mod carry;
+mod cat;
 mod clock;
 mod config;
 mod dust;
@@ -67,7 +70,7 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId, WindowLevel}
 use args::Args;
 use audio::capture::LoopbackCapture;
 use audio::features::AudioFeatures;
-use carry::Carry;
+use carry::{CAT, Carry, Dropped};
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
@@ -126,6 +129,15 @@ const COVER_EVERY: Duration = Duration::from_secs(1);
 /// How often to draw while something is being carried or settling, so it
 /// keeps up with the hand.
 const CARRY_FPS: u32 = 60;
+
+/// How often to draw at least while the cat is up and about, so its walk is
+/// smooth.
+const CAT_FPS: u32 = 30;
+
+/// How long the pointer has to rest on the cat, and how still, in logical
+/// pixels, before it counts as petting.
+const PET_AFTER: Duration = Duration::from_secs(1);
+const PET_STILL: f32 = 3.0;
 
 /// How often to look at the sun again, in the world's time. It moves a quarter
 /// of a degree a minute, and the ease smooths each step, so this is plenty.
@@ -343,6 +355,12 @@ struct App {
     hold: Hold,
     /// The things on the sill, where they rest and how a hand is carrying them.
     carry: Carry,
+    /// What the cat is doing.
+    cat: cat::Cat,
+    /// Where and since when the pointer has rested on the cat, in logical
+    /// pixels, and whether it has rested there long enough to be petting it.
+    resting_on_cat: Option<(Instant, f32, f32)>,
+    petting: bool,
     /// Whether the pointer is over one of the things, so the window takes
     /// clicks rather than letting them through.
     touchable: bool,
@@ -386,8 +404,8 @@ impl App {
         // Nothing is on show yet, so the sill starts in the light it should be in.
         let sill = Sill::at(sunlight(&config, here, SillState::default(), world));
         let look = config.look();
-        let set = [look.plant.at, look.jar.at, look.candle.at];
-        let carry = Carry::new(carry::remembered().unwrap_or(set));
+        let set = [look.plant.at, look.jar.at, look.candle.at, look.cat.at];
+        let carry = Carry::new(carry::remembered(set).unwrap_or(set));
         let kicks = proxy.clone();
         let (music, sink) = audio::analysis::spawn_analysis(move |heard| {
             let _ = kicks.send_event(Wake::Kick(heard));
@@ -428,6 +446,9 @@ impl App {
             lag: Lag::default(),
             hold: Hold::default(),
             carry,
+            cat: cat::Cat::default(),
+            resting_on_cat: None,
+            petting: false,
             touchable: false,
             cursor: None,
         }
@@ -529,6 +550,7 @@ impl App {
                 [0.0; 2],
                 answers,
                 &self.carry.pose(),
+                self.cat.shape(),
             );
         }
         // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
@@ -656,13 +678,18 @@ impl App {
     }
 
     /// Time between frames: the idle rate, the music's while it plays, or
-    /// smoothly while a thing is carried or settling.
+    /// smoothly while a thing is carried or settling or the cat is up.
     fn frame(&self) -> Duration {
         if self.carry.moving() {
             return Duration::from_secs(1) / CARRY_FPS;
         }
-        self.pace
-            .frame(Instant::now(), self.config.fps_idle, self.config.fps_music)
+        let pace = self
+            .pace
+            .frame(Instant::now(), self.config.fps_idle, self.config.fps_music);
+        if self.cat.busy() {
+            return pace.min(Duration::from_secs(1) / CAT_FPS);
+        }
+        pace
     }
 
     /// The shader to draw with: its source on disk if that is there, otherwise
@@ -729,6 +756,7 @@ impl App {
             (carry::PLANT, was.plant.at, now.plant.at),
             (carry::JAR, was.jar.at, now.jar.at),
             (carry::CANDLE, was.candle.at, now.candle.at),
+            (CAT, was.cat.at, now.cat.at),
         ] {
             if was != now {
                 self.carry.rest(which, now);
@@ -783,7 +811,8 @@ impl App {
     /// Which thing a pointer at `x` across and `y` up from the edge, in
     /// logical pixels, is over.
     fn over(&self, x: f32, y: f32) -> Option<usize> {
-        self.carry.under(x, y, self.sill.shown().wax)
+        self.carry
+            .under(x, y, self.sill.shown().wax, self.cat.height())
     }
 
     /// The pointer over the window, in logical pixels across and up from the
@@ -799,10 +828,23 @@ impl App {
     }
 
     /// Sets down whatever is in the hand, and keeps where everything now rests.
+    /// A tap on the cat wakes it instead.
     fn set_down(&mut self) {
-        if let Some(at) = self.carry.drop() {
-            tracing::debug!("set down; things now rest at {at:?}");
-            carry::keep(at);
+        if let Some(dropped) = self.carry.drop() {
+            match dropped {
+                Dropped::Set(at) => {
+                    tracing::debug!("set down; things now rest at {at:?}");
+                    carry::keep(at);
+                }
+                Dropped::Tapped(CAT) => {
+                    if let Some((spots, width)) = self.carry.spots() {
+                        tracing::info!("the cat was tapped; it gets up");
+                        let light = cat::Light::of(&self.sill.target);
+                        self.cat.wake(spots[CAT], spots, width, light);
+                    }
+                }
+                Dropped::Tapped(which) => tracing::debug!("thing {which} was tapped"),
+            }
             // Resting on the candle just after setting it down isn't asking
             // for the menu.
             self.hold.closed();
@@ -829,14 +871,18 @@ impl App {
                 } else {
                     let x = (f64::from(pointer.x - sill.left) / scale) as f32;
                     let y = (f64::from(sill.bottom - pointer.y) / scale) as f32;
-                    let on = sill.contains_point(pointer.x, pointer.y) && self.over(x, y).is_some();
+                    let inside = sill.contains_point(pointer.x, pointer.y);
+                    let over = self.over(x, y).filter(|_| inside);
                     // Not while a button is down: that hand is busy elsewhere.
-                    self.touch(on && !pointer.pressed);
+                    self.touch(over.is_some() && !pointer.pressed);
+                    let on_cat = over == Some(CAT) && !pointer.pressed;
+                    self.pet(now, on_cat.then_some((x, y)));
                 }
             }
             _ => {
                 self.carry.let_go();
                 self.touch(false);
+                self.pet(now, None);
             }
         }
 
@@ -858,6 +904,29 @@ impl App {
                 tracing::warn!("could not open the menu: {err:#}");
                 self.hold.closed();
             }
+        }
+    }
+
+    /// Notices the pointer resting on the cat at `on`, in logical pixels, or
+    /// not. Resting still for long enough is petting it.
+    fn pet(&mut self, now: Instant, on: Option<(f32, f32)>) {
+        self.resting_on_cat = match (on, self.resting_on_cat) {
+            (Some((x, y)), Some((since, sx, sy)))
+                if (x - sx).abs() <= PET_STILL && (y - sy).abs() <= PET_STILL =>
+            {
+                Some((since, sx, sy))
+            }
+            (Some((x, y)), _) => Some((now, x, y)),
+            (None, _) => None,
+        };
+        let petting = self
+            .resting_on_cat
+            .is_some_and(|(since, _, _)| now.duration_since(since) >= PET_AFTER);
+        if petting != self.petting {
+            if petting {
+                tracing::debug!("petting the cat");
+            }
+            self.petting = petting;
         }
     }
 
@@ -1022,6 +1091,14 @@ impl ApplicationHandler<Wake> for App {
                 {
                     self.sill.target = sunlight(&self.config, self.here(), self.sill.target, world);
                     self.sun_seen = world;
+                    if let Some((spots, width)) = self.carry.spots() {
+                        let was = self.cat.busy();
+                        let light = cat::Light::of(&self.sill.target);
+                        self.cat.seek(spots[CAT], spots, width, light);
+                        if self.cat.busy() && !was {
+                            tracing::info!("the cat gets up to lie somewhere warmer");
+                        }
+                    }
                 }
                 if !self.clock.is_real() {
                     let (hour, _) = clock::time_of_day(world, self.offset);
@@ -1041,6 +1118,26 @@ impl ApplicationHandler<Wake> for App {
                     .advance(dt, self.sill.shown().dust, heard.beat_phase);
                 self.sway.advance(dt, heard.kick, heard.bass_att);
                 self.ring.advance(dt, heard.kick);
+                self.cat.advance(
+                    dt,
+                    dt * self.clock.pace(),
+                    cat::Feel {
+                        x: self.carry.pose().x[CAT],
+                        held: self.carry.carried() == Some(CAT),
+                        petted: self.petting,
+                        beat: heard.beat,
+                        beat_phase: heard.beat_phase,
+                        kick: heard.kick,
+                    },
+                );
+                if let Some(x) = self.cat.walking() {
+                    self.carry.walk(CAT, x);
+                }
+                if self.cat.arrived() {
+                    let at = self.carry.arrive(CAT);
+                    tracing::debug!("the cat lies down; things now rest at {at:?}");
+                    carry::keep(at);
+                }
                 if let Some(window) = &self.window {
                     let width = f64::from(window.inner_size().width) / window.scale_factor();
                     self.carry.step(dt, width as f32);
@@ -1057,6 +1154,7 @@ impl ApplicationHandler<Wake> for App {
                         night::flicker(now.duration_since(self.born).as_secs_f64()),
                         answers,
                         &pose,
+                        self.cat.shape(),
                     );
                 }
                 if let Some(heard) = self.kick.take() {

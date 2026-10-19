@@ -27,7 +27,7 @@ fps_music = 30
 wood = "#6b4529"   # the jar's wooden lid
 lip  = "#946642"   # the lid's top edge, where it catches the light
 
-# The three things standing on the taskbar. `at` is where each stands, from 0
+# The things standing on the taskbar. `at` is where each stands, from 0
 # at the left end of the sill to 1 at the right, until a hand moves it: hold
 # one, carry it along the taskbar and let go. Where they were last set down is
 # kept in %APPDATA%\Windowsill\arranged.toml, and changing `at` here moves that
@@ -46,6 +46,14 @@ water = "#78a1a8"   # a little over half full
 at    = 0.775
 wax   = "#ede3cc"
 flame = "#ffb252"   # the flame, and the warmth it throws
+
+# The cat, a tuxedo, sleeps where `at` says until it gets up by itself: to lie on the side
+# of the others the sun comes from, or by the candle at night. Tap it and it
+# gets up, stretches and lies down again a little way off.
+[cat]
+at   = 0.81
+fur  = "#232023"   # a tuxedo: black,
+bib  = "#ece9e2"   # with a white shirt front, socks and muzzle
 
 # The room's light through the day and night (Fishbowl's palette), keyed by how
 # high the sun is in degrees. `ambient` is the colour every lit thing takes on;

@@ -1,4 +1,5 @@
-//! The three things on the sill: a potted plant, a small glass jar and a candle.
+//! The things on the sill: a potted plant, a small glass jar, a candle and a
+//! cat asleep beside them.
 //!
 //! The shader draws their shapes. What lives here is where each one stands and
 //! what it is coloured, so the sill can be rearranged or rethemed from
@@ -70,6 +71,28 @@ impl Default for Candle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Cat {
+    /// Where it sleeps until it gets up and goes somewhere else, from 0 at the
+    /// left end of the sill to 1 at the right.
+    pub at: f32,
+    /// Its coat: black, for a tuxedo.
+    pub fur: Colour,
+    /// Its white shirt front, socks, muzzle and blaze.
+    pub bib: Colour,
+}
+
+impl Default for Cat {
+    fn default() -> Self {
+        Self {
+            at: 0.81,
+            fur: Colour::rgb(0.137, 0.125, 0.137),
+            bib: Colour::rgb(0.925, 0.914, 0.886),
+        }
+    }
+}
+
 impl Mix for Plant {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
@@ -96,6 +119,16 @@ impl Mix for Candle {
             at: self.at.mix(&other.at, t),
             wax: self.wax.mix(&other.wax, t),
             flame: self.flame.mix(&other.flame, t),
+        }
+    }
+}
+
+impl Mix for Cat {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            at: self.at.mix(&other.at, t),
+            fur: self.fur.mix(&other.fur, t),
+            bib: self.bib.mix(&other.bib, t),
         }
     }
 }
