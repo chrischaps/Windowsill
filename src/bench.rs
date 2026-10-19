@@ -41,7 +41,7 @@ const PLACE: Place = Place {
 };
 
 /// The sample rate the sound is synthesized at, as a typical output device's.
-const SAMPLE_RATE: u32 = 48_000;
+pub const SAMPLE_RATE: u32 = 48_000;
 
 /// What one run measured.
 struct Run {
@@ -211,7 +211,7 @@ fn measure(
 
 /// A plain song: a kick on every beat at 120 bpm, over a bass line that walks
 /// between two notes each bar. `t` is in seconds.
-fn song(t: f32) -> f32 {
+pub fn song(t: f32) -> f32 {
     use std::f32::consts::TAU;
     let beat = t % 0.5;
     // A thump that falls from 110 to 50 Hz as it fades.

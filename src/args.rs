@@ -2,6 +2,7 @@
 //! day sped up, a moment held still, or the sky of somewhere else; and for
 //! checking how much it costs to draw.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
@@ -9,17 +10,22 @@ use anyhow::{Context, anyhow, bail};
 pub const USAGE: &str = "\
 usage: windowsill [--day-in <span>] [--at <hh:mm>] [--lat <degrees> --lon <degrees>]
        windowsill --bench <frames> [--budget <ms>]
+       windowsill --film <file> --length <span> [--day-in <span>] [--at <hh:mm>]
+                  [--lat <degrees> --lon <degrees>] [--music <span>] [--wake <span>]
 
   --day-in 60s   run a whole day in the given span (s, m or h; plain seconds)
   --at 06:30     start the day at this local time, or hold it there without --day-in
   --lat, --lon   look at the sky from here instead of windowsill.toml's place
   --bench 600    draw this many frames offscreen, idle and with music, and say
                  how much CPU each took
-  --budget 2.5   with --bench, fail if a frame took more than this many ms";
+  --budget 2.5   with --bench, fail if a frame took more than this many ms
+  --film day.raw draw <span> of the sill at 30 fps into a raw BGRA file, on a
+                 fixed day; --at is by the place's own sun, --music plays the
+                 bench's song for the first <span>, --wake taps the cat then";
 
 /// What the command line asked for. Everything is optional; nothing means the
 /// real clock and the config's place.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Args {
     pub day_in: Option<Duration>,
     pub at: Option<(u32, u32)>,
@@ -27,6 +33,10 @@ pub struct Args {
     pub longitude: Option<f64>,
     pub bench: Option<u32>,
     pub budget: Option<Duration>,
+    pub film: Option<PathBuf>,
+    pub length: Option<Duration>,
+    pub music: Option<Duration>,
+    pub wake: Option<Duration>,
     pub help: bool,
 }
 
@@ -49,12 +59,16 @@ impl Args {
                 .or_else(|| args.next())
                 .ok_or_else(|| anyhow!("{flag} needs a value"))?;
             match flag.as_str() {
-                "--day-in" => parsed.day_in = Some(span(&value)?),
+                "--day-in" => parsed.day_in = Some(span(&value, "--day-in")?),
                 "--at" => parsed.at = Some(clock_time(&value)?),
                 "--lat" => parsed.latitude = Some(degrees(&value, 90.0, "--lat")?),
                 "--lon" => parsed.longitude = Some(degrees(&value, 180.0, "--lon")?),
                 "--bench" => parsed.bench = Some(frames(&value)?),
                 "--budget" => parsed.budget = Some(millis(&value)?),
+                "--film" => parsed.film = Some(PathBuf::from(value)),
+                "--length" => parsed.length = Some(span(&value, "--length")?),
+                "--music" => parsed.music = Some(span(&value, "--music")?),
+                "--wake" => parsed.wake = Some(span(&value, "--wake")?),
                 _ => bail!("unknown option {flag}"),
             }
         }
@@ -64,12 +78,18 @@ impl Args {
         if parsed.budget.is_some() && parsed.bench.is_none() {
             bail!("--budget goes with --bench");
         }
+        let filming = [parsed.length, parsed.music, parsed.wake];
+        if parsed.film.is_some() != parsed.length.is_some()
+            || (parsed.film.is_none() && filming.iter().any(Option::is_some))
+        {
+            bail!("--film needs a --length, and --length, --music and --wake go with --film");
+        }
         Ok(parsed)
     }
 }
 
 /// A span like `60s`, `1.5m`, `2h` or `90`, at least a second long.
-fn span(text: &str) -> anyhow::Result<Duration> {
+fn span(text: &str, flag: &str) -> anyhow::Result<Duration> {
     let (number, unit) = match text.char_indices().last() {
         Some((i, 's')) => (&text[..i], 1.0),
         Some((i, 'm')) => (&text[..i], 60.0),
@@ -81,9 +101,9 @@ fn span(text: &str) -> anyhow::Result<Duration> {
         .ok()
         .map(|n| n * unit)
         .filter(|s| s.is_finite())
-        .with_context(|| format!("--day-in {text} is not a span like 60s, 2m or 1h"))?;
+        .with_context(|| format!("{flag} {text} is not a span like 60s, 2m or 1h"))?;
     if seconds < 1.0 {
-        bail!("--day-in {text} is shorter than a second");
+        bail!("{flag} {text} is shorter than a second");
     }
     Ok(Duration::from_secs_f64(seconds))
 }
@@ -199,6 +219,18 @@ mod tests {
             "--bench 9 --budget 0",
             "--budget 2",
         ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_film() {
+        let args = parse("--film day.raw --length 45s --day-in 40s --music 1m --wake 5").unwrap();
+        assert_eq!(args.film, Some(PathBuf::from("day.raw")));
+        assert_eq!(args.length, Some(Duration::from_secs(45)));
+        assert_eq!(args.music, Some(Duration::from_secs(60)));
+        assert_eq!(args.wake, Some(Duration::from_secs(5)));
+        for bad in ["--film day.raw", "--length 5s", "--music 5s", "--film x --length now"] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
