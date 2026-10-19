@@ -37,7 +37,7 @@ pub const COUNT: usize = 4;
 /// Half of each thing's foot, in logical pixels: the pot's rim, the jar, the
 /// candle, and the cat curled up. Things never stand closer than their feet
 /// allow.
-pub const FOOT: [f32; COUNT] = [13.0, 11.0, 7.0, 15.0];
+pub const FOOT: [f32; COUNT] = [13.0, 11.0, 7.0, 37.0];
 
 /// How tall each thing is where a hand can take hold of it: the pot without
 /// its leaves, the jar to its lid, and the candle's wax when it is fresh. The
@@ -328,6 +328,32 @@ impl Carry {
         clamp_foot(held.hand - held.grip, held.which, self.width)
     }
 
+    /// On first being placed, a cat lying on top of something (from an
+    /// arrangement kept when it was smaller, or a narrow screen) moves to the
+    /// nearest place clear of everything; the others stay where a hand put
+    /// them. It lies there from the start rather than walking.
+    fn make_way_for_the_cat(&mut self) {
+        let width = self.width;
+        let xs = self.things.map(|thing| thing.x);
+        let clear =
+            |x: f32| (0..COUNT).all(|i| i == CAT || (xs[i] - x).abs() >= FOOT[i] + FOOT[CAT] + GAP);
+        if clear(xs[CAT]) {
+            return;
+        }
+        let beside = (0..COUNT)
+            .filter(|&i| i != CAT)
+            .flat_map(|i| [-1.0, 1.0].map(|side| xs[i] + side * (FOOT[i] + FOOT[CAT] + GAP)));
+        let best = beside
+            .map(|x| clamp_foot(x, CAT, width))
+            .filter(|&x| clear(x))
+            .min_by(|a, b| (a - xs[CAT]).abs().total_cmp(&(b - xs[CAT]).abs()));
+        if let Some(x) = best {
+            let cat = &mut self.things[CAT];
+            cat.x = x;
+            cat.at = x / width;
+        }
+    }
+
     /// Whether `which` is off the edge in the hand: from the start for most
     /// things, but the cat only once it is clearly being carried, so a tap
     /// doesn't bounce it.
@@ -363,6 +389,9 @@ impl Carry {
                     },
                     ..Thing::default()
                 };
+            }
+            if !placed {
+                self.make_way_for_the_cat();
             }
             return;
         }
@@ -574,7 +603,7 @@ mod tests {
     const WIDTH: f32 = 1920.0;
 
     /// Where the config puts things before a hand moves them.
-    const SET: [f32; COUNT] = [0.72, 0.75, 0.775, 0.80];
+    const SET: [f32; COUNT] = [0.72, 0.75, 0.775, 0.81];
 
     /// Where things rest after being set down; a tap fails the test.
     fn set(dropped: Option<Dropped>) -> [f32; COUNT] {
@@ -810,6 +839,23 @@ mod tests {
             (rests[CAT] * WIDTH - (start + 12.0)).abs() < 1e-2,
             "{rests:?}"
         );
+    }
+
+    #[test]
+    fn a_cat_found_on_top_of_something_starts_beside_it() {
+        let mut at = SET;
+        at[CAT] = SET[JAR] + 2.0 / WIDTH;
+        let mut carry = Carry::new(at);
+        carry.step(1.0 / 60.0, WIDTH);
+        let x = carry.pose().x;
+        for i in [PLANT, JAR, CANDLE] {
+            assert!(
+                (x[i] - x[CAT]).abs() >= FOOT[i] + FOOT[CAT] + GAP - 1e-3,
+                "{x:?}"
+            );
+            assert_eq!(x[i], SET[i] * WIDTH, "the others stay put");
+        }
+        assert!(!carry.moving());
     }
 
     #[test]

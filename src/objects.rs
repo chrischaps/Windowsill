@@ -77,18 +77,18 @@ pub struct Cat {
     /// Where it sleeps until it gets up and goes somewhere else, from 0 at the
     /// left end of the sill to 1 at the right.
     pub at: f32,
-    /// Its coat.
+    /// Its coat: black, for a tuxedo.
     pub fur: Colour,
-    /// The darker stripes along its back and round its tail.
-    pub mark: Colour,
+    /// Its white shirt front, socks, muzzle and blaze.
+    pub bib: Colour,
 }
 
 impl Default for Cat {
     fn default() -> Self {
         Self {
-            at: 0.80,
-            fur: Colour::rgb(0.561, 0.529, 0.502),
-            mark: Colour::rgb(0.302, 0.282, 0.271),
+            at: 0.81,
+            fur: Colour::rgb(0.137, 0.125, 0.137),
+            bib: Colour::rgb(0.925, 0.914, 0.886),
         }
     }
 }
@@ -128,7 +128,7 @@ impl Mix for Cat {
         Self {
             at: self.at.mix(&other.at, t),
             fur: self.fur.mix(&other.fur, t),
-            mark: self.mark.mix(&other.mark, t),
+            bib: self.bib.mix(&other.bib, t),
         }
     }
 }

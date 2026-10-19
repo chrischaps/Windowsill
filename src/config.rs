@@ -317,7 +317,7 @@ mod tests {
         assert!(near(example.candle.wax, candle.wax) && near(example.candle.flame, candle.flame));
         let cat = Cat::default();
         assert_eq!(example.cat.at, cat.at);
-        assert!(near(example.cat.fur, cat.fur) && near(example.cat.mark, cat.mark));
+        assert!(near(example.cat.fur, cat.fur) && near(example.cat.bib, cat.bib));
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
         assert_eq!(example.ease, Ease::default());
         let (e, d) = (&example.sky.0, &Sky::default().0);

@@ -61,7 +61,7 @@ struct Sill {
     wax: vec4<f32>,
     flame: vec4<f32>,
     fur: vec4<f32>,
-    mark: vec4<f32>,
+    bib: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> sill: Sill;
@@ -477,7 +477,8 @@ fn candlelight(layer: vec4<f32>, p: vec2<f32>, x: vec4<f32>) -> vec4<f32> {
 //
 // One body that gets up and lies down, rather than a drawing for each pose:
 // how far up it is moves every part from curled, head tucked against its
-// flank and tail wrapped round its feet, to standing, head up and tail high.
+// flank and tail wrapped round, to standing, head up and tail high. It is a
+// tuxedo: black, with a white shirt front, socks, muzzle and blaze.
 // Seen side on, facing right; it is mirrored to face left, and squeezed
 // narrow through the turn.
 
@@ -495,6 +496,13 @@ fn turn(v: vec2<f32>, a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
 }
 
+// How much sheen dark fur shows `d` logical px in from its edge, where it
+// turns away and catches the light: most at the very edge, gone a few pixels in.
+fn sheen(d: f32) -> f32 {
+    let t = 1.0 - smoothstep(0.0, 4.0, -d);
+    return t * t;
+}
+
 // How far `p` is from the cat's tail, which runs through `t`, thinning to the tip.
 fn sd_tail(p: vec2<f32>, t: array<vec2<f32>, 5>) -> f32 {
     var d = 1e3;
@@ -504,6 +512,11 @@ fn sd_tail(p: vec2<f32>, t: array<vec2<f32>, 5>) -> f32 {
     }
     return d;
 }
+
+// How much bigger the cat is drawn than the units its shapes are laid out in.
+// It must match `carry::FOOT` and `cat::Cat::height`, which say how much room
+// it takes on the sill.
+const CAT_SIZE: f32 = 2.5;
 
 fn cat(under: vec4<f32>, q: vec2<f32>) -> vec4<f32> {
     var colour = under;
@@ -516,13 +529,15 @@ fn cat(under: vec4<f32>, q: vec2<f32>) -> vec4<f32> {
     let pet = sill.cat[2].x;
     let held = sill.cat[2].y;
     let fur = sill.fur.rgb;
-    let mark = sill.mark.rgb;
+    let bib = sill.bib.rgb;
 
-    // Facing its way. Distances shrink with the squeeze, so edges stay soft
-    // rather than doubling up.
+    // Facing its way, and drawn CAT_SIZE times larger than it is laid out.
+    // Every distance is scaled back by `squeeze` before it is covered, so
+    // edges stay one pixel soft at any size, even narrowed through a turn.
     let f = select(-1.0, 1.0, sill.cat[1].w >= 0.0) * max(abs(sill.cat[1].w), 0.2);
-    let p = vec2<f32>(q.x / f, q.y);
-    let squeeze = abs(f);
+    let p = vec2<f32>(q.x / f, q.y) / CAT_SIZE;
+    let squeeze = abs(f) * CAT_SIZE;
+    let fs = f * CAT_SIZE;
 
     // Its body, curled low and long or carried high on its legs. A stretch
     // tips it forward, chest down and rump up. It swells as it breathes.
@@ -569,14 +584,16 @@ fn cat(under: vec4<f32>, q: vec2<f32>) -> vec4<f32> {
             far_legs = min(far_legs, leg);
         }
     }
+    // White socks, up to the ankle.
+    let socks = (1.0 - smoothstep(2.2, 3.4, p.y)) * out;
 
-    // Its tail, from the rump: wrapped round its feet asleep, held high with
-    // a crook at the tip when it stands. The tip keeps time with the beat, and
-    // curls up a little more when it is petted.
+    // Its tail, from the rump: wrapped round toward its front paws asleep,
+    // held high with a crook at the tip when it stands. The tip keeps time
+    // with the beat, and curls up a little more when it is petted.
     let base = centre + turn(vec2<f32>(-r.x * 0.92, mix(-0.3, 0.4, up) * r.y), tilt);
     var curled = array<vec2<f32>, 5>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(6.5, -2.4), vec2<f32>(14.5, -2.7),
-        vec2<f32>(21.5, -2.2), vec2<f32>(25.5, -0.8 + 1.2 * pet),
+        vec2<f32>(0.0, 0.0), vec2<f32>(5.0, -2.6), vec2<f32>(10.0, -3.1),
+        vec2<f32>(14.5, -2.8), vec2<f32>(17.5, -1.6 + 1.2 * pet),
     );
     var high = array<vec2<f32>, 5>(
         vec2<f32>(0.0, 0.0), vec2<f32>(-3.5, 2.5), vec2<f32>(-5.5, 7.0),
@@ -590,78 +607,99 @@ fn cat(under: vec4<f32>, q: vec2<f32>) -> vec4<f32> {
             tail[k] = tail[2] + turn(tail[k] - tail[2], beat);
         }
     }
-    let tail_d = sd_tail(p, tail) * squeeze;
-    let tail_rgb = mix(fur, mark, 0.45) * mix(0.8, 1.0, smoothstep(0.0, 1.0, -tail_d));
 
     // Lit like the plant's pot: rounded by the room's light and edged by the
     // sun behind, a little darker underneath where the light doesn't reach.
-    let across = (q.x - centre.x * f) / (r.x * squeeze + 1.0);
+    // Dark fur shows its shape by its sheen, so every edge catches a little
+    // light of its own, the sun's when it is behind.
+    let across = (q.x - centre.x * fs) / (r.x * squeeze + 1.0);
     let lit = form(across) * mix(0.72, 1.0, smoothstep(centre.y - r.y, centre.y + r.y * 0.3, p.y));
+    let gloss = vec3<f32>(0.09) + sunlight() * shine() * 0.3;
 
     // Behind it all: the far legs and the far ear, in shade.
     let far = far_legs * squeeze;
-    colour = over(colour, fur * lit * 0.68, cover(far));
+    let far_coat = mix(fur, bib, socks) * lit * 0.68 + gloss * 0.5 * sheen(far);
+    colour = over(colour, far_coat, cover(far));
     let ear_lie = mix(-0.55, -0.12, up);
     let far_ear_at = head_at + vec2<f32>(-hr * 0.45, hr * 0.72);
     let far_ear = sd_trapezoid(turn(p - far_ear_at, -ear_lie - 0.25) - vec2<f32>(0.0, 2.0), 2.3, 0.25, 2.3) * squeeze;
-    colour = over(colour, fur * lit * 0.7, cover(far_ear));
+    colour = over(colour, fur * lit * 0.7 + gloss * 0.5 * sheen(far_ear), cover(far_ear));
+
+    let tail_d = sd_tail(p, tail) * squeeze;
+    let tail_rgb = fur * lit + gloss * sheen(tail_d);
 
     // Standing, its tail is behind it.
     if up >= 0.5 {
-        colour = over(colour, tail_rgb * lit, cover(tail_d));
+        colour = over(colour, tail_rgb, cover(tail_d));
     }
 
-    // The body, neck and near legs as one, with tabby stripes across its back.
-    // A slightly darker rim keeps its outline clear against the desktop.
+    // The body, neck and near legs as one: black, with a white shirt front
+    // down its chest and white socks.
     let torso = smin(smin(body, neck, 2.5), near_legs, 1.0) * squeeze;
-    let band = smoothstep(-0.2 * r.y, 0.7 * r.y, b.y) * (1.0 - smoothstep(0.3 * r.x, 0.6 * r.x, b.x));
-    let stripe = smoothstep(0.25, 0.85, sin(b.x * 0.95 + 0.6)) * band;
-    var coat = mix(fur, mark, stripe * 0.6);
-    coat *= mix(0.82, 1.0, smoothstep(0.0, 1.2, -torso));
-    colour = over(colour, coat * lit, cover(torso));
+    let front = shoulder + turn(vec2<f32>(1.2, -2.2), tilt);
+    let shirt = 1.0 - smoothstep(-0.6, 0.6, sd_ellipse(p - front, vec2<f32>(3.4, mix(3.6, 4.6, up))));
+    let on_legs = 1.0 - smoothstep(-0.3, 0.3, near_legs - min(body, neck));
+    var coat = mix(fur, bib, max(shirt, socks * on_legs));
+    coat = coat * lit + gloss * sheen(torso);
+    colour = over(colour, coat, cover(torso));
 
-    // Its head over the body, outlined the same way so it reads as a head,
-    // with two short stripes on the brow and a paler muzzle.
+    // Curled up, its white front paws peep out beneath its chin.
+    if up < 0.5 {
+        let paws = sd_ellipse(p - vec2<f32>(9.0, 1.5), vec2<f32>(3.6, 1.5)) * squeeze;
+        let paw_rgb = bib * form((q.x - 9.0 * fs) / (3.6 * squeeze + 1.0)) * 0.95;
+        colour = over(colour, paw_rgb, cover(paws) * (1.0 - smoothstep(0.3, 0.5, up)));
+    }
+
+    // Its head over the body, edged with the same sheen so it reads as a
+    // head: black, with a white muzzle and chin and a white blaze up its nose.
     let head_d = head * squeeze;
     let h = p - head_at;
-    let brow = smoothstep(0.2, 0.8, sin(h.x * 2.2 + 1.2)) * smoothstep(hr * 0.2, hr * 0.75, h.y) * (1.0 - smoothstep(0.0, hr * 0.6, abs(h.x)));
-    var face = mix(fur, mark, brow * 0.5);
-    face = mix(face, fur * 1.2, (1.0 - smoothstep(-0.6, 0.6, muzzle)) * 0.6);
-    face *= mix(0.8, 1.0, smoothstep(0.0, 1.0, -head_d));
-    let face_lit = form((q.x - head_at.x * f) / (hr * squeeze + 1.0)) * mix(0.85, 1.0, smoothstep(-hr, hr * 0.3, h.y));
-    colour = over(colour, face * face_lit, cover(head_d));
+    let blaze = 1.0 - smoothstep(-0.3, 0.3, sd_segment(p, snout, head_at + vec2<f32>(hr * 0.78, hr * 0.32)) - 0.6);
+    let chin = 1.0 - smoothstep(-0.5, 0.5, muzzle);
+    var face = mix(fur, bib, max(chin, blaze));
+    let face_lit = form((q.x - head_at.x * fs) / (hr * squeeze + 1.0)) * mix(0.85, 1.0, smoothstep(-hr, hr * 0.3, h.y));
+    face = face * face_lit + gloss * sheen(head_d);
+    colour = over(colour, face, cover(head_d));
 
     // The near ear, with a warmer inside. A kick flicks it back.
     let ear_at = head_at + vec2<f32>(hr * 0.15, hr * 0.78);
     let ear_q = turn(p - ear_at, -ear_lie - flick) - vec2<f32>(0.0, 2.0);
     let ear = sd_trapezoid(ear_q, 2.3, 0.25, 2.3) * squeeze;
-    colour = over(colour, fur * face_lit, cover(ear));
+    colour = over(colour, fur * face_lit + gloss * sheen(ear), cover(ear));
     let inner = sd_trapezoid(ear_q - vec2<f32>(0.2, -0.4), 1.2, 0.1, 1.5) * squeeze;
-    colour = over(colour, mix(fur, vec3<f32>(0.85, 0.55, 0.52), 0.45) * face_lit, cover(inner));
+    colour = over(colour, mix(fur, vec3<f32>(0.75, 0.48, 0.47), 0.4) * face_lit, cover(inner));
 
-    // Asleep, its tail lies round its feet in front of it.
+    // Asleep, its tail lies round in front of it.
     if up < 0.5 {
-        colour = over(colour, tail_rgb * lit, cover(tail_d));
+        colour = over(colour, tail_rgb, cover(tail_d));
     }
 
-    // Its eye: a closed curve asleep. Open, amber with a slit for a pupil,
-    // and a glint that the candle's light makes brighter.
+    // Its eye: a faint closed curve asleep. Open, green-gold with a slit for a
+    // pupil, and a glint that the candle's light makes brighter.
     let eye_at = head_at + vec2<f32>(hr * 0.38, hr * 0.12);
     let e = p - eye_at;
-    let shut = max(abs(length(e - vec2<f32>(0.0, 1.4)) - 1.6) - 0.28, e.y - 0.3) * squeeze;
-    colour = over(colour, mark * 0.6, cover(shut) * (1.0 - smoothstep(0.08, 0.3, eyes)));
+    let shut = max(abs(length(e - vec2<f32>(0.0, 1.4)) - 1.6) - 0.22, e.y - 0.3) * squeeze;
+    colour = over(colour, mix(fur, bib, 0.4) * face_lit, cover(shut) * (1.0 - smoothstep(0.08, 0.3, eyes)));
     if eyes > 0.02 {
         let open = sd_ellipse(e, vec2<f32>(1.25, max(eyes, 0.05))) * squeeze;
-        colour = over(colour, vec3<f32>(0.86, 0.68, 0.25), cover(open));
+        colour = over(colour, vec3<f32>(0.72, 0.78, 0.30), cover(open));
         let pupil = sd_ellipse(e - vec2<f32>(0.2, 0.0), vec2<f32>(0.35, max(eyes * 0.9, 0.04))) * squeeze;
-        colour = over(colour, vec3<f32>(0.06, 0.05, 0.04), cover(pupil));
+        colour = over(colour, vec3<f32>(0.04, 0.04, 0.03), cover(pupil));
         let glint = (length(e - vec2<f32>(0.45, 0.3 * eyes)) - 0.3) * squeeze;
         colour = over(colour, vec3<f32>(1.0), cover(glint) * eyes * (0.45 + 0.4 * sill.candle.x));
     }
 
-    // A nose at the end of the muzzle.
+    // A pink nose at the end of the white muzzle, and whiskers.
     let nose = (length(p - snout - vec2<f32>(hr * 0.36, hr * 0.1)) - 0.6) * squeeze;
-    return over(colour, vec3<f32>(0.55, 0.36, 0.36), cover(nose));
+    colour = over(colour, vec3<f32>(0.78, 0.5, 0.52), cover(nose));
+    let whisker_root = snout + vec2<f32>(hr * 0.1, -hr * 0.08);
+    var whiskers = 1e3;
+    for (var k = 0; k < 3; k++) {
+        let a = radians(-12.0 + 12.0 * f32(k));
+        whiskers = min(whiskers, sd_segment(p, whisker_root, whisker_root + vec2<f32>(cos(a), sin(a)) * 5.0));
+    }
+    let whisker_d = whiskers * squeeze - 0.35;
+    return over(colour, bib * 0.9, cover(whisker_d) * 0.55);
 }
 
 // ---- The dust -------------------------------------------------------------
@@ -758,7 +796,7 @@ fn thing(colour: vec4<f32>, i: i32, p: vec2<f32>, x: vec4<f32>) -> vec4<f32> {
             }
         }
         default {
-            if abs(p.x - x.w) < 40.0 {
+            if abs(p.x - x.w) < 100.0 {
                 let drawn = cat(empty, q);
                 let layer = candlelight(vec4<f32>(graded(drawn.rgb), drawn.a), p, x);
                 return under_layer(colour, layer);
@@ -787,7 +825,7 @@ fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     colour = foot(colour, p, x.x, 12.0, sill.lift.x);
     colour = foot(colour, p, x.y, 11.0, sill.lift.y);
     colour = foot(colour, p, x.z, 7.5, sill.lift.z);
-    colour = foot(colour, p, x.w, mix(14.0, 11.0, sill.cat[0].x), sill.lift.w);
+    colour = foot(colour, p, x.w, mix(35.0, 27.0, sill.cat[0].x), sill.lift.w);
 
     // The one last picked up in front, the others in their usual order.
     let front = i32(sill.order.x);

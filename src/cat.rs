@@ -37,19 +37,19 @@ const STRETCHING: f32 = 3.6;
 
 /// How fast it walks, in logical pixels a second, and how far it goes with
 /// each full stride. It eases into the walk and out of it over EASE seconds.
-const PACE: f32 = 10.0;
-const STRIDE: f32 = 13.0;
+const PACE: f32 = 20.0;
+const STRIDE: f32 = 32.0;
 const EASE: f32 = 1.5;
 
 /// How far a tap sends it, at most, in logical pixels, and the least room
 /// worth walking into.
-const WANDER: f32 = 90.0;
-const ROOM: f32 = 20.0;
+const WANDER: f32 = 160.0;
+const ROOM: f32 = 45.0;
 
 /// The furthest it goes by itself for the sun or the candle, and the least
 /// difference worth getting up for, in logical pixels.
-const FARTHEST: f32 = 200.0;
-const NEAREST: f32 = 30.0;
+const FARTHEST: f32 = 320.0;
+const NEAREST: f32 = 55.0;
 
 /// How long it stays put after it last moved by itself, and after a hand last
 /// set it down, in seconds of the sky's time. The hand's choice wins for a
@@ -444,7 +444,7 @@ impl Cat {
     /// How tall it is right now, where a hand can take hold of it, in
     /// logical pixels.
     pub fn height(&self) -> f32 {
-        16.0 + 8.0 * self.up
+        40.0 + 20.0 * self.up
     }
 
     /// How it is lying or standing, for the shader: how far up, how far into
@@ -556,7 +556,7 @@ mod tests {
     /// Plant, jar and candle where the config puts them, and the cat to the
     /// right of the candle.
     fn spots() -> [f32; COUNT] {
-        [0.72, 0.75, 0.775, 0.80].map(|at| at * WIDTH)
+        [0.72, 0.75, 0.775, 0.81].map(|at| at * WIDTH)
     }
 
     /// Runs the cat `seconds` at `fps`, walking it in the sill's place, and
@@ -647,8 +647,8 @@ mod tests {
         let mut cat = Cat::default();
         let mut spots = spots();
         spots[CAT] = 0.5 * WIDTH;
-        spots[PLANT] = spots[CAT] - 31.0;
-        spots[CANDLE] = spots[CAT] + 26.0;
+        spots[PLANT] = spots[CAT] - (FOOT[PLANT] + FOOT[CAT] + GAP);
+        spots[CANDLE] = spots[CAT] + FOOT[CANDLE] + FOOT[CAT] + GAP + 1.0;
         let mut x = spots[CAT];
         cat.wake(x, spots, WIDTH, Light::default());
         run(&mut cat, &mut x, 30.0, 20.0);
@@ -704,7 +704,10 @@ mod tests {
         };
         let to = warmest(spots[CAT], spots, WIDTH, light).unwrap();
         // The candle's left is the jar, so it goes to the candle's right.
-        assert!(to > spots[CANDLE] && to - spots[CANDLE] < 30.0, "{to}");
+        assert!(
+            to > spots[CANDLE] && to - spots[CANDLE] < FOOT[CANDLE] + FOOT[CAT] + GAP + 3.0,
+            "{to}"
+        );
     }
 
     #[test]
@@ -832,7 +835,7 @@ mod tests {
             (x, cat.up)
         };
         let (slow, fast) = (walked(15.0), walked(30.0));
-        assert!((slow.0 - fast.0).abs() < 2.0, "{slow:?} vs {fast:?}");
+        assert!((slow.0 - fast.0).abs() < 4.0, "{slow:?} vs {fast:?}");
         assert!((slow.1 - fast.1).abs() < 0.05, "{slow:?} vs {fast:?}");
     }
 

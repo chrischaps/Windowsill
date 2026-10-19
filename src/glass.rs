@@ -132,7 +132,7 @@ struct Uniforms {
     wax: [f32; 4],
     flame: [f32; 4],
     fur: [f32; 4],
-    mark: [f32; 4],
+    bib: [f32; 4],
 }
 
 impl Glass {
@@ -417,7 +417,7 @@ impl Painter {
             wax: look.candle.wax.padded(),
             flame: look.candle.flame.padded(),
             fur: look.cat.fur.padded(),
-            mark: look.cat.mark.padded(),
+            bib: look.cat.bib.padded(),
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
