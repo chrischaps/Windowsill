@@ -646,8 +646,13 @@ impl App {
 
     /// How the sill is answering the music: how far the dust has drifted, how
     /// far the leaves lean, and how bright the jar's ring is.
-    fn answers(&self) -> [f32; 3] {
-        [self.drift.at(), self.sway.lean(), self.ring.light()]
+    fn answers(&self) -> [f32; 4] {
+        [
+            self.drift.at(),
+            self.sway.lean(),
+            self.ring.light(),
+            self.sway.speed(),
+        ]
     }
 
     /// Time between frames: the idle rate, the music's while it plays, or
@@ -1034,7 +1039,7 @@ impl ApplicationHandler<Wake> for App {
                 self.sill.hear(dt, &self.config.ease);
                 self.drift
                     .advance(dt, self.sill.shown().dust, heard.beat_phase);
-                self.sway.advance(dt, heard.kick);
+                self.sway.advance(dt, heard.kick, heard.bass_att);
                 self.ring.advance(dt, heard.kick);
                 if let Some(window) = &self.window {
                     let width = f64::from(window.inner_size().width) / window.scale_factor();

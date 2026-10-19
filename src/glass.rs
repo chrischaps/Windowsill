@@ -224,7 +224,7 @@ impl Glass {
     /// stand on it, `sill` the light it is in, `flicker` how the candle's
     /// flame breathes, and `music` how the sill answers the music: how far the
     /// dust has come through its cycle, how many degrees the plant's leaves
-    /// lean, and how bright the jar's ring is. `pose` is how the things stand,
+    /// lean, how bright the jar's ring is, and how fast the leaves swing. `pose` is how the things stand,
     /// and how a hand is carrying them.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -234,7 +234,7 @@ impl Glass {
         look: &Look,
         sill: &SillState,
         flicker: [f32; 2],
-        music: [f32; 3],
+        music: [f32; 4],
         pose: &Pose,
     ) {
         let frame = match self.surface.get_current_texture() {
@@ -369,7 +369,7 @@ impl Painter {
         look: &Look,
         sill: &SillState,
         flicker: [f32; 2],
-        music: [f32; 3],
+        music: [f32; 4],
         pose: &Pose,
     ) {
         let palette = &look.palette;
@@ -401,7 +401,10 @@ impl Painter {
             places: [plant, jar, candle, pose.front as f32],
             lift: four(pose.lift),
             tip: four(pose.tip),
-            swing: four(pose.swing),
+            swing: {
+                let [plant, jar, candle] = pose.swing;
+                [plant, jar, candle, music[3]]
+            },
             pot: look.plant.pot.padded(),
             leaf: look.plant.leaf.padded(),
             glass: look.jar.glass.padded(),

@@ -43,6 +43,7 @@ struct Sill {
     tip: vec4<f32>,
     // How far what is loose inside each trails as it is carried, in degrees to
     // the right: the plant's leaves, the jar's water and the candle's flame.
+    // In .w, how fast the music is swinging the leaves, in degrees a second.
     swing: vec4<f32>,
     // The things on the sill, from windowsill.toml. Only .rgb is used.
     pot: vec4<f32>,
@@ -283,7 +284,8 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     // Seven leaves fanned from the pot, the outer ones behind and in shade,
     // each drooping a little more the further out it leans. The bass leans
     // them all one way, the long ones a little further than the short, and
-    // carried they trail back against the air the same way.
+    // the long ones trail the short as they swing, so the plant ripples.
+    // Carried, they trail back against the air the same way.
     var angles = array<f32, 7>(-64.0, -40.0, -18.0, 2.0, 21.0, 42.0, 63.0);
     var lengths = array<f32, 7>(19.0, 26.0, 31.0, 34.0, 30.0, 25.0, 18.0);
     var stems = array<f32, 7>(5.0, 8.0, 11.0, 13.0, 10.0, 8.0, 5.0);
@@ -293,7 +295,9 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     for (var k = 0; k < 7; k++) {
         let i = order[k];
         let len = lengths[i];
-        let angle = radians(angles[i] + lean * (0.55 + 0.45 * len / 34.0));
+        let reach = len / 34.0;
+        let trail = sill.swing.w * 0.14 * reach * reach;
+        let angle = radians(angles[i] + lean * (0.55 + 0.45 * reach) - trail);
         let dir = vec2<f32>(sin(angle), cos(angle));
         let across = vec2<f32>(dir.y, -dir.x);
         let start = root + dir * stems[i];

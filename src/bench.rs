@@ -171,7 +171,7 @@ fn measure(
         sill.target.dust = dust::stir(heard.bass_att);
         sill.hear(dt, &config.ease);
         drift.advance(dt, sill.shown().dust, heard.beat_phase);
-        sway.advance(dt, heard.kick);
+        sway.advance(dt, heard.kick, heard.bass_att);
         ring.advance(dt, heard.kick);
         painter.paint(
             view,
@@ -181,7 +181,7 @@ fn measure(
             &look,
             &sill.shown(),
             night::flicker(seconds),
-            [drift.at(), sway.lean(), ring.light()],
+            [drift.at(), sway.lean(), ring.light(), sway.speed()],
             &pose,
         );
         // One frame in flight, as the swapchain allows.
