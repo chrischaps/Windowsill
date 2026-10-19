@@ -1,5 +1,5 @@
-//! The ledge's colours, and the ease from one look to the next when the config
-//! changes them or moves the things on the sill.
+//! The sill's colours, and the ease from one look to the next when the config
+//! changes them.
 //!
 //! Colours are kept as the shader writes them: non-linear 0..1 values, the same
 //! numbers a `"#rrggbb"` in the config file names.
@@ -70,28 +70,17 @@ impl<'de> Deserialize<'de> for Colour {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Palette {
-    /// The ledge's face.
+    /// The jar's wooden lid.
     pub wood: Colour,
-    /// The face toward its bottom edge, a little in shadow.
-    pub wood_shade: Colour,
-    /// The thin front edge that catches the light, and the board's top.
+    /// The lid's top edge, where it catches the light.
     pub lip: Colour,
-    /// The darker lines of the grain running along the board.
-    pub grain: Colour,
-    /// The warmth on the glass just above the ledge, and how strong it starts.
-    pub glow: Colour,
-    pub glow_alpha: f32,
 }
 
 impl Default for Palette {
     fn default() -> Self {
         Self {
             wood: Colour::rgb(0.42, 0.27, 0.16),
-            wood_shade: Colour::rgb(0.33, 0.20, 0.12),
             lip: Colour::rgb(0.58, 0.40, 0.26),
-            grain: Colour::rgb(0.27, 0.16, 0.09),
-            glow: Colour::rgb(0.50, 0.34, 0.22),
-            glow_alpha: 0.42,
         }
     }
 }
@@ -100,16 +89,12 @@ impl Mix for Palette {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
             wood: self.wood.mix(&other.wood, t),
-            wood_shade: self.wood_shade.mix(&other.wood_shade, t),
             lip: self.lip.mix(&other.lip, t),
-            grain: self.grain.mix(&other.grain, t),
-            glow: self.glow.mix(&other.glow, t),
-            glow_alpha: self.glow_alpha.mix(&other.glow_alpha, t),
         }
     }
 }
 
-/// Everything the config says about how the sill looks: the ledge's colours,
+/// Everything the config says about how the sill looks: the lid's colours,
 /// and where each thing on it stands and what colour it is.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Look {

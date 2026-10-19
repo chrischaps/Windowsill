@@ -2,10 +2,10 @@
 //!
 //! winit owns the window's styles and rewrites `GWL_EXSTYLE` whenever one of its
 //! own flags changes (visibility, z-order, cursor hit-testing). So click-through
-//! goes through winit's `set_cursor_hittest(false)`, which keeps
-//! `WS_EX_LAYERED | WS_EX_TRANSPARENT` set across those rewrites, and the two bits
-//! winit doesn't know about are added here. Call [`make_glass`] again after any
-//! winit call that might change the window's flags.
+//! goes through winit's `set_cursor_hittest`, which keeps `WS_EX_TRANSPARENT`
+//! set across those rewrites while it is off, and the bits winit doesn't know
+//! about are added here. Call [`make_glass`] again after any winit call that
+//! might change the window's flags.
 //!
 //! winit also doesn't pass on the broadcasts that say the desktop has changed
 //! shape, that the machine has woken from sleep, or that the screen has been
@@ -43,9 +43,9 @@ use crate::Wake;
 use crate::hold::Pointer;
 use crate::placement::{Edge, Rect, Taskbar};
 
-/// The extended styles the sill must always have.
-pub const GLASS_EX_STYLE: u32 =
-    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+/// The extended styles the sill must always have. While the pointer is away
+/// from the things on it, it has `WS_EX_TRANSPARENT` as well.
+pub const GLASS_EX_STYLE: u32 = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
 /// The window's HWND, or `None` if winit didn't give us a Win32 handle.
 pub fn hwnd(window: &Window) -> Option<HWND> {
@@ -55,15 +55,19 @@ pub fn hwnd(window: &Window) -> Option<HWND> {
     }
 }
 
-/// Adds the glass styles to the window: clicks fall through to whatever is
-/// underneath, it never takes focus, and it has no taskbar button or Alt+Tab entry.
-pub fn make_glass(window: &Window) -> anyhow::Result<()> {
+/// Adds the glass styles to the window: it never takes focus, it has no
+/// taskbar button or Alt+Tab entry, and unless it is `touchable`, clicks fall
+/// through it to whatever is underneath.
+pub fn make_glass(window: &Window, touchable: bool) -> anyhow::Result<()> {
     let hwnd =
         hwnd(window).ok_or_else(|| anyhow::anyhow!("the sill has no Win32 window handle"))?;
     // SAFETY: `hwnd` is a live window owned by this thread's winit event loop.
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-        let glass = (ex_style | GLASS_EX_STYLE) & !WS_EX_APPWINDOW;
+        let through = if touchable { 0 } else { WS_EX_TRANSPARENT };
+        let glass = (ex_style | GLASS_EX_STYLE | through)
+            & !WS_EX_APPWINDOW
+            & !(WS_EX_TRANSPARENT & !through);
         if glass != ex_style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, glass as isize);
             // Style changes only take effect after a frame change.

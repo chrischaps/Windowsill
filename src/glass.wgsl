@@ -1,7 +1,7 @@
-// The sill: a wooden ledge along the bottom of the strip with a potted plant,
-// a small glass jar and a candle standing on it, and above them a faint warmth
-// on the glass that fades to nothing before the top edge, so the desktop shows
-// through. Every shape is a signed distance in logical pixels, so the sill is
+// The sill: a potted plant, a small glass jar and a candle standing on the
+// taskbar's top edge, which is the strip's bottom edge, in the light of the
+// real sky. Everything else is clear, so the desktop shows through all round
+// them. Every shape is a signed distance in logical pixels, so the things are
 // equally crisp at any DPI. Colours leave here premultiplied.
 
 struct Sill {
@@ -11,14 +11,11 @@ struct Sill {
     scale: f32,
     // 0 while the sill is away, easing to 1 as it settles in.
     presence: f32,
-    // How strong the warmth on the glass starts, just above the ledge.
-    glow_alpha: f32,
-    // The palette, from windowsill.toml. Only .rgb is used.
+    pad: f32,
+    // The jar's wooden lid, and its lit top edge, from windowsill.toml. Only
+    // .rgb is used.
     wood: vec4<f32>,
-    wood_shade: vec4<f32>,
     lip_light: vec4<f32>,
-    glow: vec4<f32>,
-    grain: vec4<f32>,
     // The eased sill state: beam angle in degrees, colour temperature in
     // kelvin, shadow side from -1 to 1, and moonlight from 0 to 1.
     light: vec4<f32>,
@@ -37,9 +34,16 @@ struct Sill {
     // degrees the plant's leaves lean to the right, and in .w how bright the
     // jar's ring of light is, from 0 to 1.
     music: vec4<f32>,
-    // Where the plant, jar and candle stand, from 0 to 1 across, and in .w the
-    // strip's width in physical pixels.
+    // Where the plant, jar and candle stand, in physical pixels across, and in
+    // .w which of them (0, 1 or 2) is in front: the last one picked up.
     places: vec4<f32>,
+    // How high each is lifted off the edge by a hand, in logical pixels.
+    lift: vec4<f32>,
+    // How far each tips as it is carried, in degrees to the right.
+    tip: vec4<f32>,
+    // How far what is loose inside each trails as it is carried, in degrees to
+    // the right: the plant's leaves, the jar's water and the candle's flame.
+    swing: vec4<f32>,
     // The things on the sill, from windowsill.toml. Only .rgb is used.
     pot: vec4<f32>,
     leaf: vec4<f32>,
@@ -51,25 +55,17 @@ struct Sill {
 
 @group(0) @binding(0) var<uniform> sill: Sill;
 
-// Heights in logical pixels up from the bottom edge. The board shows its front
-// face, then a narrow strip of its top running back to the glass.
-const FACE: f32 = 22.0;
-const LEDGE: f32 = 30.0;
-const LIP: f32 = 1.5;
-// Where things stand: partway back on the board's top.
-const BASE: f32 = 25.0;
-// How far apart the window's glazing bars are, and how wide each one is.
-const PANE: f32 = 380.0;
-const BAR: f32 = 6.0;
+// Where things stand: on the strip's bottom edge, which is the taskbar's top.
+const BASE: f32 = 0.0;
 // Which side the room's own light comes from, -1 left to 1 right, when the
 // window is straight ahead. It models the things on the sill whatever the sun
 // is doing.
 const ROOM: f32 = -0.45;
-// The sky's light through the window when the sun isn't coming in: soft and
-// a little cool.
-const SKY: vec3<f32> = vec3<f32>(0.86, 0.93, 1.0);
 // Moonlight: the sun's light off grey rock, which the eye at night sees as blue.
 const MOON: vec3<f32> = vec3<f32>(0.62, 0.74, 1.0);
+// How far from each thing anything of it is drawn, in logical pixels: its
+// leaves or its light. Beyond, the strip is clear.
+const NEAR: f32 = 150.0;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -86,14 +82,10 @@ fn dither(pixel: vec2<f32>) -> f32 {
 
 // ---- The light ------------------------------------------------------------
 //
-// The sun is outside, beyond the glass, so it reaches the sill from behind the
-// things on it. It lights the board's top, catches their edges on its side,
-// glows through the leaves and the water, and throws their shadows forward and
-// away from itself. The window's glazing bars stripe the board, and between
-// them the light shows faintly in the air.
-//
-// The sun only does that while the room's window lets it in. The rest of the
-// day the sky lights the board instead, softly and from the window's side.
+// The sun is outside, beyond the screen, so it reaches the things from behind.
+// It catches their edges on its side and glows through the leaves and the
+// water. The rest of the day the room's light models them, from the window's
+// side, and at night the moon catches an edge coolly.
 
 // How much sun reaches the sill, from 0 at night to 1. It fades through the
 // few degrees either side of the horizon.
@@ -105,11 +97,6 @@ fn sun() -> f32 {
 // not at all while it is round the side of the window.
 fn shine() -> f32 {
     return sun() * sill.room.x * (0.78 + 0.22 * sin(radians(clamp(sill.light.x, 0.0, 90.0))));
-}
-
-// How much of the sky's light stands in for the sun while it isn't coming in.
-fn sky() -> f32 {
-    return smoothstep(-6.0, 4.0, sill.light.x) * (1.0 - sill.room.x);
 }
 
 // Which side the room's own light comes from, -1 left to 1 right: the
@@ -139,13 +126,6 @@ fn moon_side() -> f32 {
     return -sill.room.z;
 }
 
-// How far the light travels sideways for each pixel it falls: nothing at noon,
-// a long way at dawn and dusk. It has the sign of the shadow side.
-fn lean() -> f32 {
-    let e = radians(clamp(sill.light.x, 3.0, 90.0));
-    return sill.light.z * min(cos(e) / sin(e), 4.0);
-}
-
 // The sunlight's colour at its temperature (Tanner Helland's fit to the
 // blackbody curve), scaled so its brightest channel is 1.
 fn sunlight() -> vec3<f32> {
@@ -166,33 +146,10 @@ fn sunlight() -> vec3<f32> {
     return rgb / max(max(rgb.r, rgb.g), rgb.b);
 }
 
-// How much of the sun a glazing bar keeps off the point `x` across and `back`
-// logical px in from the glass, the panes lined up on `pane`, from 0 to 1. Its
-// edge is `soft` px wide.
-fn bars(x: f32, back: f32, pane: f32, soft: f32) -> f32 {
-    // The bar's shadow runs forward from the glass, slanting away from the sun.
-    let along = x - pane - PANE * 0.5 - sill.light.z * back * 3.0;
-    let off = abs(along - PANE * round(along / PANE));
-    return 1.0 - smoothstep(BAR * 0.5 - soft * 0.5, BAR * 0.5 + soft, off);
-}
-
-// How much of the light something standing at `x`, `half_width` across and
-// `height` tall, keeps off the board's top at `p`. It falls forward, toward the
-// room, and sideways by `lean` for each pixel of height: longer and softer the
-// lower the light.
-fn shadow(p: vec2<f32>, x: f32, half_width: f32, height: f32, lean: f32) -> f32 {
-    let reach = lean * height * 0.5;
-    let centre = vec2<f32>(x + reach * 0.5, BASE - 1.2);
-    let d = sd_box(p - centre, vec2<f32>(half_width * 0.85 + abs(reach) * 0.5, 2.4), 2.0);
-    let soft = 1.2 + min(abs(reach) * 0.03, 2.0);
-    // Darkest at the foot, thinning toward the tip.
-    let out = clamp((p.x - x) * sign(reach) / (abs(reach) + half_width), 0.0, 1.0);
-    return (1.0 - smoothstep(-soft, soft, d)) * mix(1.0, 0.6, out);
-}
-
 // Something lit by the room at this hour (Fishbowl's palette): it takes on the
 // colour of the light, and loses some of its own as the light fails. Light
-// that makes itself, like the candle's flame, is left alone.
+// that makes itself, like the candle's flame, is left alone. It is linear, so
+// it grades premultiplied colour as well as plain.
 fn graded(rgb: vec3<f32>) -> vec3<f32> {
     let lit = rgb * sill.sky.rgb;
     let grey = dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -209,6 +166,20 @@ fn cover(d: f32) -> f32 {
 // Paints `rgb` at opacity `a` over what is already there.
 fn over(under: vec4<f32>, rgb: vec3<f32>, a: f32) -> vec4<f32> {
     return vec4<f32>(rgb * a, a) + under * (1.0 - a);
+}
+
+// Lays a premultiplied `layer` over what is already there.
+fn under_layer(under: vec4<f32>, layer: vec4<f32>) -> vec4<f32> {
+    return layer + under * (1.0 - layer.a);
+}
+
+// `q`, measured from a thing's foot, as the thing sees it while it tips `deg`
+// degrees to the right: turned back upright about its foot.
+fn upright(q: vec2<f32>, deg: f32) -> vec2<f32> {
+    let a = radians(deg);
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(q.x * c - q.y * s, q.x * s + q.y * c);
 }
 
 // How a rounded face is lit, `u` from -1 at its left edge to 1 at its right, as
@@ -231,36 +202,6 @@ fn hash(p: vec2<f32>) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
-}
-
-fn noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let bottom = mix(hash(i), hash(i + vec2<f32>(1.0, 0.0)), u.x);
-    let top = mix(hash(i + vec2<f32>(0.0, 1.0)), hash(i + vec2<f32>(1.0, 1.0)), u.x);
-    return mix(bottom, top, u.y);
-}
-
-fn fbm(p: vec2<f32>) -> f32 {
-    var sum = 0.0;
-    var amp = 0.5;
-    var q = p;
-    for (var i = 0; i < 3; i++) {
-        sum += amp * noise(q);
-        q = q * 2.03 + vec2<f32>(17.0, 5.0);
-        amp *= 0.5;
-    }
-    return sum;
-}
-
-// How much darker grain shows at `p`, from 0 to 1. The lines run along the
-// board and wander a little, the way sawn timber does.
-fn grain(p: vec2<f32>) -> f32 {
-    let wander = fbm(vec2<f32>(p.x * 0.006, p.y * 0.09)) * 10.0;
-    let lines = 0.5 + 0.5 * sin(p.y * 1.1 + wander);
-    let fibre = fbm(vec2<f32>(p.x * 0.05, p.y * 1.3));
-    return clamp(smoothstep(0.55, 1.0, lines) * 0.7 + fibre * 0.4 - 0.12, 0.0, 1.0);
 }
 
 // ---- Signed distances (after Inigo Quilez) --------------------------------
@@ -319,73 +260,17 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
     return min(a, b) - h * h * k * 0.25;
 }
 
-// ---- The ledge ------------------------------------------------------------
+// ---- Where things touch the edge ------------------------------------------
 
-// The ledge, with the things standing at `x` (plant, jar, candle) shading it.
-fn ledge(under: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
-    var colour = under;
-
-    // The top of the board, lit from above: lightest at its front edge, falling
-    // toward the glass. Its grain is foreshortened.
-    let back = clamp((p.y - FACE) / (LEDGE - FACE), 0.0, 1.0);
-    var top = mix(mix(sill.lip_light.rgb, sill.wood.rgb, 0.35), sill.wood.rgb * 0.92, back);
-    top = mix(top, sill.grain.rgb, grain(vec2<f32>(p.x, p.y * 3.0 + 40.0)) * 0.3);
-
-    // The sun on it, striped by the glazing bars and shaded by what stands there.
-    // The panes line up on the jar, so it always stands in the light.
-    var shade = bars(p.x, LEDGE - p.y, x.y, 1.5 + (LEDGE - p.y) * 0.4);
-    shade = max(shade, shadow(p, x.x, 12.0, 46.0, lean()) * 0.9);
-    shade = max(shade, shadow(p, x.y, 11.0, 33.0, lean()) * 0.4);
-    shade = max(shade, shadow(p, x.z, 7.0, 24.0, lean()) * 0.8);
-    // The sky's light casts only faint, short shadows away from the window.
-    let away = -sill.room.y * 0.6;
-    var sky_shade = shadow(p, x.x, 12.0, 46.0, away) * 0.45;
-    sky_shade = max(sky_shade, shadow(p, x.y, 11.0, 33.0, away) * 0.25);
-    sky_shade = max(sky_shade, shadow(p, x.z, 7.0, 24.0, away) * 0.4);
-    // The moon throws soft shadows of its own, a little way to one side.
-    let moon_lean = sill.room.z * 1.2;
-    var moon_shade = shadow(p, x.x, 12.0, 46.0, moon_lean) * 0.6;
-    moon_shade = max(moon_shade, shadow(p, x.y, 11.0, 33.0, moon_lean) * 0.3);
-    moon_shade = max(moon_shade, shadow(p, x.z, 7.0, 24.0, moon_lean) * 0.5);
-    top *= 0.6 + sunlight() * shine() * 0.72 * (1.0 - shade) + SKY * sky() * 0.36 * (1.0 - sky_shade)
-        + MOON * moon() * 0.95 * (1.0 - moon_shade);
-    colour = over(colour, top, cover(p.y - LEDGE));
-
-    // The front face, a touch darker toward the bottom, with a lighter lip
-    // where it turns into the top.
-    let depth = clamp(p.y / FACE, 0.0, 1.0);
-    var face = mix(sill.wood_shade.rgb, sill.wood.rgb, smoothstep(0.0, 0.7, depth));
-    face = mix(face, sill.grain.rgb, grain(p) * 0.45);
-    face = mix(face, sill.lip_light.rgb, smoothstep(FACE - LIP, FACE - 0.3, p.y));
-    return over(colour, face, cover(p.y - FACE));
-}
-
-// A soft dark pool on the board's top where something stands on it.
-fn contact(colour: vec4<f32>, p: vec2<f32>, x: f32, half_width: f32) -> vec4<f32> {
-    let e = length(vec2<f32>((p.x - x) / (half_width * 1.2), (p.y - BASE) / 2.8));
-    let shade = (1.0 - smoothstep(0.35, 1.0, e)) * 0.42 * step(p.y, LEDGE);
-    return vec4<f32>(colour.rgb * (1.0 - shade), colour.a);
-}
-
-// Sunlight gathered by the jar's water into a small bright patch on the wood,
-// just in front of it. Only when the sun is high enough to come down through it.
-fn caustic(colour: vec4<f32>, p: vec2<f32>, x: f32) -> vec4<f32> {
-    let high = smoothstep(22.0, 48.0, sill.light.x) * shine();
-    let on_top = step(FACE, p.y) * step(p.y, LEDGE);
-    if high * on_top <= 0.0 {
-        return colour;
-    }
-    let centre = vec2<f32>(x + lean() * 33.0 * 0.3, BASE - 1.6);
-    let q = (p - centre) / vec2<f32>(10.0, 2.1);
-    let r = length(q);
-    // A soft pool with a brighter rim, and a few fine threads through it, as
-    // a curved glass of water draws them.
-    let pool = exp(-r * r * 2.2);
-    let rim = exp(-pow((r - 0.8) / 0.16, 2.0)) * smoothstep(-0.4, 0.6, q.y + 0.3);
-    let threads = smoothstep(0.5, 0.85, noise(vec2<f32>(p.x * 0.45, p.y * 0.3) + 7.0)) * pool;
-    let light = (pool * 0.5 + rim * 0.7 + threads * 0.4) * high * on_top;
-    let tint = mix(sunlight(), sill.water.rgb * 1.6, 0.2);
-    return vec4<f32>(colour.rgb + tint * light * 0.8 * colour.a, colour.a);
+// A thin dark line just above the edge where something `half_width` wide stands
+// at `x`, so it rests on the taskbar rather than floats over it. Lifted `lift`
+// px, it thins and spreads, and the gap shows.
+fn foot(colour: vec4<f32>, p: vec2<f32>, x: f32, half_width: f32, lift: f32) -> vec4<f32> {
+    let up = 1.0 - lift / 6.0;
+    let across = abs(p.x - x) / (half_width * (1.0 + lift * 0.06));
+    let shade = (1.0 - smoothstep(0.0, 2.2 + lift * 0.4, p.y))
+        * (1.0 - smoothstep(0.55, 1.2, across)) * 0.3 * clamp(up, 0.35, 1.0);
+    return over(colour, vec3<f32>(0.0), shade);
 }
 
 // ---- The plant ------------------------------------------------------------
@@ -397,16 +282,18 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 
     // Seven leaves fanned from the pot, the outer ones behind and in shade,
     // each drooping a little more the further out it leans. The bass leans
-    // them all one way, the long ones a little further than the short.
+    // them all one way, the long ones a little further than the short, and
+    // carried they trail back against the air the same way.
     var angles = array<f32, 7>(-64.0, -40.0, -18.0, 2.0, 21.0, 42.0, 63.0);
     var lengths = array<f32, 7>(19.0, 26.0, 31.0, 34.0, 30.0, 25.0, 18.0);
     var stems = array<f32, 7>(5.0, 8.0, 11.0, 13.0, 10.0, 8.0, 5.0);
     var order = array<i32, 7>(0, 6, 1, 5, 2, 4, 3);
     var depth = array<f32, 7>(0.74, 0.74, 0.86, 0.86, 0.95, 0.95, 1.0);
+    let lean = sill.music.z + sill.swing.x;
     for (var k = 0; k < 7; k++) {
         let i = order[k];
         let len = lengths[i];
-        let angle = radians(angles[i] + sill.music.z * (0.55 + 0.45 * len / 34.0));
+        let angle = radians(angles[i] + lean * (0.55 + 0.45 * len / 34.0));
         let dir = vec2<f32>(sin(angle), cos(angle));
         let across = vec2<f32>(dir.y, -dir.x);
         let start = root + dir * stems[i];
@@ -447,7 +334,9 @@ fn plant(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 
 // ---- The jar --------------------------------------------------------------
 
-fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
+// The jar, tipped `tip` degrees, with its water leaning `slosh` degrees more
+// than the world's level.
+fn jar(under: vec4<f32>, p: vec2<f32>, tip: f32, slosh: f32) -> vec4<f32> {
     var colour = under;
     let body = sd_box(p - vec2<f32>(0.0, BASE + 12.5), vec2<f32>(11.0, 12.5), 5.0);
     let neck = sd_box(p - vec2<f32>(0.0, BASE + 26.5), vec2<f32>(7.5, 2.0), 0.8);
@@ -458,8 +347,9 @@ fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     colour = over(colour, glass_rgb, cover(glass) * 0.08);
 
     // Water a little over half way, denser where the glass curves away, with a
-    // bright line where it meets the air.
-    let level = BASE + 15.0;
+    // bright line where it meets the air. It lies level with the world, not the
+    // jar, and piles up a little against whichever side it is pulled from.
+    let level = BASE + 15.0 + p.x * tan(radians(clamp(slosh - tip, -30.0, 30.0)));
     let water = max(body + 1.2, p.y - level);
     let curve = abs(p.x) / 11.0;
     colour = over(colour, sill.water.rgb, cover(water) * (0.26 + 0.2 * curve * curve));
@@ -493,7 +383,7 @@ fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     let glint = length(p - vec2<f32>(side * 4.0, BASE + 23.2)) - 0.9;
     colour = over(colour, vec3<f32>(1.0), cover(glint) * 0.5);
 
-    // A wooden lid, cut from the same board as the ledge.
+    // A wooden lid.
     let lid = sd_box(p - vec2<f32>(0.0, BASE + 30.5), vec2<f32>(9.0, 2.5), 1.2);
     var wood = mix(sill.wood.rgb, sill.lip_light.rgb, 0.5) * form(p.x / 9.0);
     wood = mix(wood, sill.lip_light.rgb * 1.1, smoothstep(BASE + 31.6, BASE + 32.8, p.y));
@@ -502,7 +392,9 @@ fn jar(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 
 // ---- The candle -----------------------------------------------------------
 
-fn candle(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
+// The candle, tipped `tip` degrees, its flame leaning `trail` degrees more than
+// straight up as it is carried through the air.
+fn candle(under: vec4<f32>, p: vec2<f32>, tip: f32, trail: f32) -> vec4<f32> {
     var colour = under;
     let lit = sill.candle.x;
     // It burns down through the night.
@@ -529,14 +421,16 @@ fn candle(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
 
     // The flame: a teardrop that grows as the candle catches, a pale core and a
     // touch of blue at its foot. It breathes a little taller and shorter, and
-    // its tip sways, slowly.
+    // its tip sways, slowly. It burns straight up whichever way the candle
+    // tips, and trails back as it is carried.
     let size = smoothstep(0.0, 1.0, lit);
     let breath = sill.candle.z;
     let r = 2.7 * size + 0.01;
     let height = (10.0 + 0.8 * breath) * size + 0.02;
     var q = p - (wick_top + vec2<f32>(0.0, r * 0.4));
-    let lift = clamp(q.y / height, 0.0, 1.0);
-    q.x -= sill.candle.w * 0.7 * lift * lift * size;
+    let rise = clamp(q.y / height, 0.0, 1.0);
+    let bend = tan(radians(clamp(trail - tip, -40.0, 40.0))) * height;
+    q.x -= (sill.candle.w * 0.7 * size + bend) * rise * rise;
     let flame = sd_teardrop(q, r, 0.3 * size + 0.005, height - r);
     let core = sd_teardrop(q - vec2<f32>(0.0, -r * 0.2), r * 0.55, 0.1, (height - r) * 0.55);
     var fire = sill.flame.rgb;
@@ -544,33 +438,37 @@ fn candle(under: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
     fire = mix(fire, vec3<f32>(1.0, 0.96, 0.86), cover(core));
     colour = over(colour, fire, cover(flame) * smoothstep(0.02, 0.3, lit));
 
-    // The warmth it throws around itself, onto the glass and the wood alike.
+    // The warmth it throws around itself, into the air close by.
     let reach = length(q - vec2<f32>(0.0, height * 0.3));
     let warmth = lit * (0.28 + 0.02 * breath) * exp(-reach * reach / (2.0 * 15.0 * 15.0));
     return vec4<f32>(colour.rgb + sill.flame.rgb * warmth, colour.a + warmth * (1.0 - colour.a));
 }
 
-// The candle's light on everything near it: the board, the jar and the
-// plant's nearer leaves, warmed in a wide pool that breathes with the flame.
-// It lights what is there rather than glowing in the air, so the glass stays
-// clear.
-fn candlelight(colour: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
-    let flame = vec2<f32>(0.5, BASE + 24.0 * sill.candle.y + 6.0);
-    let d = length((p - flame) * vec2<f32>(1.0, 1.6));
+// Where the candle's flame is, in logical pixels.
+fn flame_at(x: vec3<f32>) -> vec2<f32> {
+    return vec2<f32>(x.z + 0.5, sill.lift.z + BASE + 24.0 * sill.candle.y + 6.0);
+}
+
+// The candle's light on the things near it, warmed in a wide pool that
+// breathes with the flame. It lights what is there rather than glowing in the
+// air, so the desktop stays clear.
+fn candlelight(layer: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
+    let d = length((p - flame_at(x)) * vec2<f32>(1.0, 1.6));
     let pool = sill.candle.x * (0.55 + 0.03 * sill.candle.z) * exp(-d * d / (2.0 * 44.0 * 44.0));
     let warm = sill.flame.rgb * pool;
-    return vec4<f32>(colour.rgb * (1.0 + warm * 2.6) + warm * 0.06 * colour.a, colour.a);
+    return vec4<f32>(layer.rgb * (1.0 + warm * 2.6) + warm * 0.06 * layer.a, layer.a);
 }
 
 // ---- The dust -------------------------------------------------------------
 //
-// While music plays, a few dozen motes drift in the light. Each lives in a cell
-// of a grid that rises slowly through the air, wandering about the middle of
-// its cell, and turns as it goes so it catches the light and loses it. How far
-// the grid has risen, how far each mote has wandered and how far it has
-// turned are all whole cycles of `sill.music.y`, and the grid repeats after
-// DUST_TILE cells, so the dust comes round to where it began without a jump.
-// In silence `sill.music.y` stands still and the motes fade where they are.
+// While music plays, a few dozen motes drift in the light around the things.
+// Each lives in a cell of a grid that rises slowly through the air, wandering
+// about the middle of its cell, and turns as it goes so it catches the light
+// and loses it. How far the grid has risen, how far each mote has wandered and
+// how far it has turned are all whole cycles of `sill.music.y`, and the grid
+// repeats after DUST_TILE cells, so the dust comes round to where it began
+// without a jump. In silence `sill.music.y` stands still and the motes fade
+// where they are.
 
 const DUST_CELL: f32 = 28.0;
 const DUST_TILE: vec2<f32> = vec2<f32>(256.0, 128.0);
@@ -599,87 +497,98 @@ fn motes(p: vec2<f32>) -> f32 {
     return exp(-d * d) * turn;
 }
 
-// The dust over the air behind the things on the sill. `air` is how opaque the
-// air was before they were drawn, so whatever covers a mote hides it, and
-// `beam` is how much sun is in the air at `p`.
-fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>, air: f32, beam: f32) -> vec4<f32> {
+// The dust in the air behind the things, where light falls on it: the sun's,
+// in a soft pool about each thing it lights, and the candle's close round its
+// flame.
+fn drifting(colour: vec4<f32>, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
     let stir = sill.music.x;
-    if stir < 0.002 || p.y < LEDGE {
+    if stir < 0.002 {
         return colour;
     }
-    // It shows in the sun's light, and in the candle's close around its flame.
-    let flame = vec2<f32>(x.z + 0.5, BASE + 24.0 * sill.candle.y + 6.0);
-    let near = length(p - flame);
+    let around = vec3<f32>(
+        length(p - vec2<f32>(x.x, 40.0)),
+        length(p - vec2<f32>(x.y, 30.0)),
+        length(p - vec2<f32>(x.z, 30.0)),
+    );
+    let pool = exp(-around * around / (2.0 * 70.0 * 70.0));
+    let beam = shine() * max(max(pool.x, pool.y), pool.z) * 0.5;
+    let near = length(p - flame_at(x));
     let by_candle = sill.candle.x * 0.8 * exp(-near * near / (2.0 * 34.0 * 34.0));
     let light = beam + by_candle;
     if light < 0.004 {
         return colour;
     }
-    let seen = 1.0 - clamp((colour.a - air) / max(1.0 - air, 1e-3), 0.0, 1.0);
     let rgb = (graded(sunlight()) * beam + sill.flame.rgb * by_candle) / light;
-    let a = motes(p) * min(light * 3.5, 1.0) * smoothstep(0.0, 0.35, stir) * 0.95 * seen;
+    let a = motes(p) * min(light * 3.5, 1.0) * smoothstep(0.0, 0.35, stir) * 0.95;
     return over(colour, rgb, a);
 }
 
 // ---- The whole sill -------------------------------------------------------
+
+// Lays thing `i` (0 the plant, 1 the jar, 2 the candle) over `colour`, standing
+// at `x`, lifted, tipped and trailing as the hand has it.
+fn thing(colour: vec4<f32>, i: i32, p: vec2<f32>, x: vec3<f32>) -> vec4<f32> {
+    let foot_at = vec2<f32>(x[i], sill.lift[i]);
+    let q = upright(p - foot_at, sill.tip[i]);
+    let empty = vec4<f32>(0.0);
+    switch i {
+        case 0 {
+            if abs(p.x - x.x) < 48.0 {
+                let drawn = plant(empty, q);
+                let layer = candlelight(vec4<f32>(graded(drawn.rgb), drawn.a), p, x);
+                return under_layer(colour, layer);
+            }
+        }
+        case 1 {
+            if abs(p.x - x.y) < 20.0 {
+                let drawn = jar(empty, q, sill.tip.y, sill.swing.y);
+                let layer = candlelight(vec4<f32>(graded(drawn.rgb), drawn.a), p, x);
+                return under_layer(colour, layer);
+            }
+        }
+        default {
+            // The candle grades its own wax, and its flame makes its own light.
+            if abs(p.x - x.z) < 60.0 {
+                return under_layer(colour, candle(empty, q, sill.tip.z, sill.swing.z));
+            }
+        }
+    }
+    return colour;
+}
 
 @fragment
 fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     // Logical pixels across from the left and up from the bottom edge.
     let up = sill.height - pixel.y;
     let p = vec2<f32>(pixel.x, up) / sill.scale;
-    let ledge_top = LEDGE * sill.scale;
-
-    // The glass above: warmth that falls away with a soft tail and is gone by the top.
-    let fade_span = max(sill.height - ledge_top, 1.0);
-    let t = clamp((up - ledge_top) / fade_span, 0.0, 1.0);
-    let glow_alpha = sill.glow_alpha * pow(1.0 - t, 2.4);
-    // The warmth takes on a little of the sun's colour while it shines.
-    var warmth = mix(sill.glow.rgb, sill.glow.rgb * sunlight() * 1.15, shine() * 0.5);
-    warmth = mix(warmth, sill.glow.rgb * MOON, moon() * 0.5);
-    var colour = vec4<f32>(warmth * glow_alpha, glow_alpha);
-
     // Each thing stands on a whole physical pixel, so it draws the same way
     // wherever it is put.
-    let x = floor(sill.places.xyz * sill.places.w) / sill.scale;
+    let x = floor(sill.places.xyz) / sill.scale;
 
-    // The light in the air between the glazing bars, leaning toward the sun as
-    // it rises from the board. It reaches higher when the sun is low, and the
-    // dust in it is never quite even.
-    let above = max(p.y - LEDGE, 0.0);
-    let reach = mix(1.0, 0.45, sin(radians(clamp(sill.light.x, 0.0, 90.0))));
-    let rise = pow(1.0 - clamp(t / reach, 0.0, 1.0), 1.6);
-    let dust = 0.6 + 0.4 * noise(vec2<f32>(p.x * 0.012, p.y * 0.03));
-    // Light scatters in the air, so the bars blur as the shafts rise.
-    let between = 1.0 - 0.7 * bars(p.x + lean() * above * 0.6, 0.0, x.y, 8.0 + above * 0.5);
-    let beam = shine() * between * rise;
-    let shaft = beam * dust * 0.13 * step(LEDGE, p.y);
-    colour = over(colour, sunlight(), shaft);
-    let air = colour.a;
+    // Most of the strip is nowhere near anything, and stays clear.
+    let gap = min(min(abs(p.x - x.x), abs(p.x - x.y)), abs(p.x - x.z));
+    if gap > NEAR {
+        return vec4<f32>(0.0);
+    }
 
-    colour = ledge(colour, p, x);
-    colour = contact(colour, p, x.x, 12.0);
-    colour = contact(colour, p, x.y, 11.0);
-    colour = contact(colour, p, x.z, 7.5);
-    colour = caustic(colour, p, x.y);
-    // Only work out the shapes near where they stand.
-    if abs(p.x - x.x) < 48.0 {
-        colour = plant(colour, p - vec2<f32>(x.x, 0.0));
+    var colour = drifting(vec4<f32>(0.0), p, x);
+    colour = foot(colour, p, x.x, 12.0, sill.lift.x);
+    colour = foot(colour, p, x.y, 11.0, sill.lift.y);
+    colour = foot(colour, p, x.z, 7.5, sill.lift.z);
+
+    // The one last picked up in front, the other two in their usual order.
+    let front = i32(sill.places.w);
+    for (var i = 0; i < 3; i++) {
+        if i != front {
+            colour = thing(colour, i, p, x);
+        }
     }
-    if abs(p.x - x.y) < 16.0 {
-        colour = jar(colour, p - vec2<f32>(x.y, 0.0));
-    }
-    // All of it so far is lit by the room. The candle grades its own wax.
-    colour = vec4<f32>(graded(colour.rgb), colour.a);
-    if abs(p.x - x.z) < 140.0 {
-        colour = candlelight(colour, p - vec2<f32>(x.z, 0.0));
-    }
-    colour = drifting(colour, p, x, air, beam);
-    if abs(p.x - x.z) < 60.0 {
-        colour = candle(colour, p - vec2<f32>(x.z, 0.0));
-    }
+    colour = thing(colour, front, p, x);
 
     colour *= sill.presence;
+    if colour.a <= 0.0 {
+        return vec4<f32>(0.0);
+    }
     // Dither colour and alpha together so the colour stays premultiplied.
     let n = dither(pixel.xy) / 255.0;
     let a = clamp(colour.a + n, 0.0, 1.0);

@@ -1,11 +1,12 @@
 //! The one interaction: rest the pointer on the candle and hold it still, and
 //! a tiny menu opens.
 //!
-//! The sill lets every click through, so it never hears the mouse. Instead it
-//! looks at where the pointer is each time it draws, and only a pointer that
-//! stays put over the candle for a whole second counts. One sweeping across
-//! the taskbar, dragging something, or pausing for a moment on the way past
-//! does not. Once the menu has been, the pointer must leave the candle before
+//! The sill lets clicks through everywhere but the things on it, so it can't
+//! count on hearing the mouse. Instead it looks at where the pointer is each
+//! time it draws, and only a pointer that stays put over the candle for a
+//! whole second counts. One sweeping across the taskbar, carrying the candle,
+//! or pausing for a moment on the way past does not. Once the menu has been,
+//! or the candle has been set down, the pointer must leave the candle before
 //! it can open again.
 //!
 //! Pure logic, so it can be tested without a desktop. Everything is in
@@ -19,25 +20,25 @@ use crate::placement::Rect;
 const HOLD: Duration = Duration::from_secs(1);
 
 /// How far around the candle's foot the pointer counts as on it, in logical
-/// pixels: a little wider than the wax, and from the board up past the flame.
+/// pixels: a little wider than the wax, and from the edge it stands on up past
+/// the flame.
 const HALF_WIDTH: f64 = 14.0;
-const FROM: f64 = 18.0;
-const TO: f64 = 70.0;
+const TO: f64 = 46.0;
 
 /// How far a resting hand drifts, in logical pixels, without counting as a move.
 const SLACK: f64 = 4.0;
 
 /// Where on the screen the candle can be held, given where the sill rests,
-/// how far across it the candle stands, from 0 to 1, and the sill's scale.
-pub fn candle(sill: Rect, at: f32, scale: f64) -> Rect {
+/// how far across it the candle stands, in logical pixels, and the sill's scale.
+pub fn candle(sill: Rect, x: f32, scale: f64) -> Rect {
     // Where the shader stands it: on a whole physical pixel.
-    let x = sill.left + (f64::from(at) * f64::from(sill.width())).floor() as i32;
+    let x = sill.left + (f64::from(x) * scale).floor() as i32;
     let half = (HALF_WIDTH * scale).round() as i32;
     Rect {
         left: x - half,
         top: sill.bottom - (TO * scale).round() as i32,
         right: x + half,
-        bottom: sill.bottom - (FROM * scale).round() as i32,
+        bottom: sill.bottom,
     }
 }
 
@@ -123,7 +124,8 @@ impl Hold {
         false
     }
 
-    /// The menu has closed. It won't open again until the pointer leaves the candle.
+    /// The menu has closed, or the candle has just been set down. It won't open
+    /// again until the pointer leaves the candle.
     pub fn closed(&mut self) {
         self.state = State::Spent;
     }
@@ -165,13 +167,13 @@ mod tests {
             right: 1920,
             bottom: 960,
         };
-        let zone = candle(sill, 0.5, 1.0);
+        let zone = candle(sill, 960.0, 1.0);
         assert_eq!((zone.left, zone.right), (946, 974));
-        assert_eq!((zone.top, zone.bottom), (890, 942));
+        assert_eq!((zone.top, zone.bottom), (914, 960));
 
-        let doubled = candle(sill, 0.5, 2.0);
+        let doubled = candle(sill, 480.0, 2.0);
         assert_eq!((doubled.left, doubled.right), (932, 988));
-        assert_eq!(doubled.top, 960 - 140);
+        assert_eq!(doubled.top, 960 - 92);
     }
 
     #[test]

@@ -2,10 +2,12 @@
 //!
 //! It rests on top of a bottom taskbar on the primary monitor and steps aside in
 //! any other layout. It follows the taskbar through display, DPI and monitor
-//! changes. Clicks fall through it, it never takes focus, and it stays out of
-//! the taskbar and Alt+Tab. It draws a wooden ledge with a plant, a jar and a
-//! candle on it in the light of the real sun, under glass that fades upward to
-//! clear, and eases in over a few seconds when it comes to rest.
+//! changes. It never takes focus, and it stays out of the taskbar and Alt+Tab.
+//! It stands a plant, a jar and a candle on the taskbar's top edge in the light
+//! of the real sun, with the desktop clear all round them, and eases in over a
+//! few seconds when it comes to rest. Clicks fall through it everywhere but the
+//! things themselves, and those a hand can pick up and set down somewhere else
+//! along the edge; they are there again the next day.
 //! It learns where it is from Windows' location service, unless
 //! `windowsill.toml` says. Its colours and frame rate come from that file too,
 //! re-read on every save.
@@ -17,13 +19,13 @@
 //! When a fullscreen app, a game or a presentation comes up, it steps behind
 //! it, fades out and stops drawing until it is gone. While the screen is
 //! locked it does nothing at all: no drawing, no listening, no looking.
-//! Rest the pointer on the candle for a second and a tiny menu opens; it is
-//! the only thing the sill ever answers.
+//! Rest the pointer on the candle for a second and a tiny menu opens.
 //! `--bench 600` draws frames offscreen and says what each one cost.
 
 mod args;
 mod audio;
 mod bench;
+mod carry;
 mod clock;
 mod config;
 mod dust;
@@ -58,13 +60,14 @@ use std::time::{Duration, Instant, SystemTime};
 use triple_buffer::Output;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
+use winit::window::{CursorIcon, Window, WindowAttributes, WindowId, WindowLevel};
 
 use args::Args;
 use audio::capture::LoopbackCapture;
 use audio::features::AudioFeatures;
+use carry::Carry;
 use clock::Clock;
 use config::{Config, Edited};
 use glass::Glass;
@@ -119,6 +122,10 @@ const QUIET: Duration = Duration::from_millis(150);
 /// How often to ask Windows whether something fullscreen has come up. The
 /// sill fades over seconds, so a second's wait is never seen.
 const COVER_EVERY: Duration = Duration::from_secs(1);
+
+/// How often to draw while something is being carried or settling, so it
+/// keeps up with the hand.
+const CARRY_FPS: u32 = 60;
 
 /// How often to look at the sun again, in the world's time. It moves a quarter
 /// of a degree a minute, and the ease smooths each step, so this is plenty.
@@ -334,6 +341,13 @@ struct App {
     lag: Lag,
     /// Whether the pointer is resting on the candle.
     hold: Hold,
+    /// The things on the sill, where they rest and how a hand is carrying them.
+    carry: Carry,
+    /// Whether the pointer is over one of the things, so the window takes
+    /// clicks rather than letting them through.
+    touchable: bool,
+    /// Where the pointer last was over the window, in its physical pixels.
+    cursor: Option<PhysicalPosition<f64>>,
 }
 
 impl App {
@@ -371,6 +385,9 @@ impl App {
         }
         // Nothing is on show yet, so the sill starts in the light it should be in.
         let sill = Sill::at(sunlight(&config, here, SillState::default(), world));
+        let look = config.look();
+        let set = [look.plant.at, look.jar.at, look.candle.at];
+        let carry = Carry::new(carry::remembered().unwrap_or(set));
         let kicks = proxy.clone();
         let (music, sink) = audio::analysis::spawn_analysis(move |heard| {
             let _ = kicks.send_event(Wake::Kick(heard));
@@ -410,6 +427,9 @@ impl App {
             kick: None,
             lag: Lag::default(),
             hold: Hold::default(),
+            carry,
+            touchable: false,
+            cursor: None,
         }
     }
 
@@ -489,7 +509,7 @@ impl App {
         window.set_cursor_hittest(false)?;
         #[cfg(windows)]
         {
-            win32::make_glass(&window)?;
+            win32::make_glass(&window, false)?;
             win32::watch_layout(&window, self.proxy.clone())?;
         }
         Ok(window)
@@ -508,6 +528,7 @@ impl App {
                 &self.sill.shown(),
                 [0.0; 2],
                 answers,
+                &self.carry.pose(),
             );
         }
         // With `with_active(false)` winit shows it with SW_SHOWNOACTIVATE.
@@ -539,7 +560,7 @@ impl App {
         // winit rewrites the ex-style on every show, hide, move and resize, so the
         // glass styles go back on after each look.
         #[cfg(windows)]
-        win32::make_glass(window)?;
+        win32::make_glass(window, self.touchable)?;
 
         if now != self.resting {
             match now {
@@ -629,8 +650,12 @@ impl App {
         [self.drift.at(), self.sway.lean(), self.ring.light()]
     }
 
-    /// Time between frames: the idle rate, or the music's while it plays.
+    /// Time between frames: the idle rate, the music's while it plays, or
+    /// smoothly while a thing is carried or settling.
     fn frame(&self) -> Duration {
+        if self.carry.moving() {
+            return Duration::from_secs(1) / CARRY_FPS;
+        }
         self.pace
             .frame(Instant::now(), self.config.fps_idle, self.config.fps_music)
     }
@@ -660,6 +685,7 @@ impl App {
                     let world = self.clock.now(now);
                     self.appearance.toward(config.look(), now);
                     let was = self.here();
+                    self.rearrange(&config);
                     self.config = config;
                     let here = self.here();
                     if here != was {
@@ -688,24 +714,135 @@ impl App {
         }
     }
 
-    /// Looks at where the pointer is, and opens the candle's menu once it has
-    /// rested there long enough. Only while the sill is fully there and on top.
+    /// Moves anything whose place the config has changed, and keeps the new
+    /// arrangement. Things the config leaves where they were stay where a hand
+    /// last put them.
+    fn rearrange(&mut self, config: &Config) {
+        let (was, now) = (self.config.look(), config.look());
+        let mut moved = false;
+        for (which, was, now) in [
+            (carry::PLANT, was.plant.at, now.plant.at),
+            (carry::JAR, was.jar.at, now.jar.at),
+            (carry::CANDLE, was.candle.at, now.candle.at),
+        ] {
+            if was != now {
+                self.carry.rest(which, now);
+                moved = true;
+            }
+        }
+        if moved {
+            carry::keep(self.carry.rests());
+        }
+    }
+
+    /// Where the sill rests and its scale, while it is fully there and on top,
+    /// so the things on it can be touched.
+    fn reachable(&self, now: Instant) -> Option<(Rect, f64)> {
+        match (self.resting, &self.window) {
+            (Resting::On(sill), Some(window))
+                if !self.locked
+                    && self.covered.is_none()
+                    && !self.lowered
+                    && self.presence.at(now) >= 1.0 =>
+            {
+                Some((sill, window.scale_factor()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Lets clicks land on the window while the pointer is over one of the
+    /// things, and fall through it again once it isn't.
+    fn touch(&mut self, touchable: bool) {
+        if touchable == self.touchable {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        self.touchable = touchable;
+        if let Err(err) = window.set_cursor_hittest(touchable) {
+            tracing::warn!("could not change whether the sill takes clicks: {err}");
+        }
+        #[cfg(windows)]
+        if let Err(err) = win32::make_glass(&window, touchable) {
+            tracing::warn!("could not restyle the glass: {err:#}");
+        }
+        window.set_cursor(if touchable {
+            CursorIcon::Grab
+        } else {
+            CursorIcon::Default
+        });
+    }
+
+    /// Which thing a pointer at `x` across and `y` up from the edge, in
+    /// logical pixels, is over.
+    fn over(&self, x: f32, y: f32) -> Option<usize> {
+        self.carry.under(x, y, self.sill.shown().wax)
+    }
+
+    /// The pointer over the window, in logical pixels across and up from the
+    /// edge, from where winit last said it was.
+    fn cursor(&self) -> Option<(f32, f32)> {
+        let (cursor, window) = (self.cursor?, self.window.as_ref()?);
+        let scale = window.scale_factor();
+        let height = f64::from(window.inner_size().height);
+        Some((
+            (cursor.x / scale) as f32,
+            ((height - cursor.y) / scale) as f32,
+        ))
+    }
+
+    /// Sets down whatever is in the hand, and keeps where everything now rests.
+    fn set_down(&mut self) {
+        if let Some(at) = self.carry.drop() {
+            tracing::debug!("set down; things now rest at {at:?}");
+            carry::keep(at);
+            // Resting on the candle just after setting it down isn't asking
+            // for the menu.
+            self.hold.closed();
+            if let Some(window) = &self.window {
+                window.set_cursor(CursorIcon::Grab);
+            }
+        }
+    }
+
+    /// Looks at where the pointer is: lets the things be taken hold of while it
+    /// is over them, notices a hand let go where the window couldn't hear it,
+    /// and opens the candle's menu once the pointer has rested there long
+    /// enough. Only while the sill is fully there and on top.
     fn feel(&mut self) {
+        let now = Instant::now();
+        let reachable = self.reachable(now);
+        let pointer = reachable.and_then(|_| pointer());
+        match (reachable, pointer) {
+            (Some((sill, scale)), Some(pointer)) => {
+                if self.carry.held().is_some() {
+                    if !pointer.pressed {
+                        self.set_down();
+                    }
+                } else {
+                    let x = (f64::from(pointer.x - sill.left) / scale) as f32;
+                    let y = (f64::from(sill.bottom - pointer.y) / scale) as f32;
+                    let on = sill.contains_point(pointer.x, pointer.y) && self.over(x, y).is_some();
+                    // Not while a button is down: that hand is busy elsewhere.
+                    self.touch(on && !pointer.pressed);
+                }
+            }
+            _ => {
+                self.carry.let_go();
+                self.touch(false);
+            }
+        }
+
         if self.hold.open() {
             return;
         }
-        let now = Instant::now();
-        let candle = match (self.resting, &self.window) {
-            (Resting::On(sill), Some(window))
-                if self.covered.is_none() && !self.lowered && self.presence.at(now) >= 1.0 =>
-            {
-                let scale = window.scale_factor();
-                let at = self.appearance.at(now).candle.at;
-                Some((hold::candle(sill, at, scale), hold::slack(scale)))
-            }
-            _ => None,
-        };
-        let pointer = candle.and_then(|_| pointer());
+        let candle = reachable.map(|(sill, scale)| {
+            let x = self.carry.pose().x[carry::CANDLE];
+            (hold::candle(sill, x, scale), hold::slack(scale))
+        });
+        let pointer = candle.and(pointer);
         let (zone, slack) = candle.unzip();
         if self.hold.sense(now, pointer, zone, slack.unwrap_or(0))
             && let Some(zone) = zone
@@ -789,6 +926,8 @@ impl ApplicationHandler<Wake> for App {
             }
             Wake::Locked => {
                 self.locked = true;
+                self.carry.let_go();
+                self.touch(false);
                 self.hearing.sleep();
                 self.look(event_loop);
             }
@@ -830,6 +969,44 @@ impl ApplicationHandler<Wake> for App {
                     glass.resize(size);
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some(position);
+                if let Some((x, y)) = self.cursor() {
+                    if self.carry.held().is_some() {
+                        self.carry.reach(x);
+                    } else if self.over(x, y).is_none() {
+                        // Off the thing it was over: clicks go through at once,
+                        // rather than at the next frame.
+                        self.touch(false);
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                if self.carry.held().is_none() {
+                    self.touch(false);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => {
+                    if let Some((x, y)) = self.cursor()
+                        && let Some(which) = self.over(x, y)
+                        && self.reachable(Instant::now()).is_some()
+                    {
+                        tracing::debug!("picked up thing {which}");
+                        self.carry.grab(which, x);
+                        if let Some(window) = &self.window {
+                            window.set_cursor(CursorIcon::Grabbing);
+                            window.request_redraw();
+                        }
+                    }
+                }
+                ElementState::Released => self.set_down(),
+            },
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let world = self.clock.now(now);
@@ -859,8 +1036,13 @@ impl ApplicationHandler<Wake> for App {
                     .advance(dt, self.sill.shown().dust, heard.beat_phase);
                 self.sway.advance(dt, heard.kick);
                 self.ring.advance(dt, heard.kick);
+                if let Some(window) = &self.window {
+                    let width = f64::from(window.inner_size().width) / window.scale_factor();
+                    self.carry.step(dt, width as f32);
+                }
                 self.eased = now;
                 let answers = self.answers();
+                let pose = self.carry.pose();
                 if let (Some(glass), Some(window)) = (&mut self.glass, &self.window) {
                     glass.draw(
                         window.scale_factor(),
@@ -869,6 +1051,7 @@ impl ApplicationHandler<Wake> for App {
                         &self.sill.shown(),
                         night::flicker(now.duration_since(self.born).as_secs_f64()),
                         answers,
+                        &pose,
                     );
                 }
                 if let Some(heard) = self.kick.take() {

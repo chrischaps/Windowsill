@@ -24,15 +24,14 @@ fps_idle = 15
 fps_music = 30
 
 [palette]
-wood       = "#6b4529"   # the ledge's face
-wood_shade = "#54331f"   # the face toward its bottom edge
-lip        = "#946642"   # the thin front edge that catches the light, and the top
-grain      = "#452917"   # the darker lines of the grain along the board
-glow       = "#805738"   # the warmth on the glass just above the ledge
-glow_alpha = 0.42        # how strong that warmth starts, 0 to 1
+wood = "#6b4529"   # the jar's wooden lid
+lip  = "#946642"   # the lid's top edge, where it catches the light
 
-# The three things on the ledge. `at` is where each stands, from 0 at the left
-# end of the sill to 1 at the right.
+# The three things standing on the taskbar. `at` is where each stands, from 0
+# at the left end of the sill to 1 at the right, until a hand moves it: hold
+# one, carry it along the taskbar and let go. Where they were last set down is
+# kept in %APPDATA%\Windowsill\arranged.toml, and changing `at` here moves that
+# thing again.
 [plant]
 at   = 0.72
 pot  = "#a85c3d"   # the clay pot
@@ -102,7 +101,7 @@ vivid     = 0.65
 [ease]
 # How slowly the sill follows a change, in seconds: the time to cover about two
 # thirds of it. Nothing may be quicker than 2.
-light  = 4.0   # the beam, its colour, the shadows, the moonlight and the sky
+light  = 4.0   # the sun, its colour, the moonlight and the sky
 candle = 3.0   # the candle catching and going out
 wax    = 60.0  # the candle burning down, and fresh again by morning
 music  = 3.0   # the dust stirring with the music, and settling after it

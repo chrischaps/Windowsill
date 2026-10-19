@@ -6,29 +6,31 @@ Oct 17, 2026 · @Chris
 
 Windowsill is a thin, living strip that rests on top of the Windows taskbar. It looks like a windowsill, with a few small things on it in the light of the real sky. The light follows your local sun and weather. When music plays, the sill answers quietly: dust drifts in the beam, a plant leans with the bass.
 
-It asks for nothing. It sends no notifications, has no window to manage, and lets every click pass through. You look at it the way you glance at a real window, and it tells you the time of day without a number.
+It asks for nothing. It sends no notifications, has no window to manage, and lets every click pass through except on the things themselves, which you can move along the sill. You look at it the way you glance at a real window, and it tells you the time of day without a number.
 
 It is worth building because most of it already exists. Seoul has the system-audio capture and beat analysis. Fishbowl worked out the day-and-night rhythm. A v1 is roughly two to three weekends of new code, which makes it one of the more finishable ideas on the list.
 
 ## The experience
 
-The sill is about 120 px tall and spans the primary monitor, just above the taskbar. A painted wooden ledge holds three objects: a potted plant, a small glass jar, and a candle. Above the ledge the strip fades to transparent, so your desktop shows through as if it were the glass.
+The taskbar is the sill. Three objects stand on its top edge: a potted plant, a small glass jar, and a candle. Everything around them is clear, so your desktop shows through as if it were the glass. (The first version drew a wooden ledge 120 px tall above the taskbar; it took more of the screen than it gave back, and the taskbar already is a ledge.)
+
+You can pick any of them up and carry it along the taskbar. It lifts a few pixels and tips with the way you carry it; the flame and the leaves trail back and the water sloshes. Set it down on another and that one slides aside to make room. They stay where you leave them.
 
 A day on the sill:
 
 - **Morning.** Low, gold light comes in at a steep angle and casts long shadows to one side. Real sunrise sets the timing, from your latitude and longitude.
-- **Midday.** The light is short and white, and shadows sit almost under the objects. The jar throws a small caustic onto the wood.
-- **Rain.** If the weather says rain, drops bead and run down the glass edge and the light goes grey. Snow settles in a thin line along the ledge.
+- **Midday.** The light is short and white, and catches both edges of every object from behind.
+- **Rain.** If the weather says rain, drops bead and run down the glass edge and the light goes grey. Snow settles in a thin line along the taskbar's edge.
 - **Music.** When system audio plays, dust motes appear in the beam and drift on the beat. The plant's leaves lean slightly on bass hits. The jar rings faintly on accents. Nothing flashes; it all happens at the speed of breath.
 - **Evening.** The light warms and fades. The candle lights itself at local sunset.
 - **Night.** Moonlight in the right phase, cool and dim. The candle burns down over the evening and is fresh again the next morning.
 
-Over weeks the plant grows one leaf for each day you use the computer. After about a month it flowers. Leave for a holiday and it wilts a little, then recovers when you return. It is the only memory Windowsill keeps.
+Over weeks the plant grows one leaf for each day you use the computer. After about a month it flowers. Leave for a holiday and it wilts a little, then recovers when you return. Apart from where you last set things down, it is the only memory Windowsill keeps.
 
 ## Design principles
 
 1. **Peripheral, never central.** It must be readable in a glance from the corner of your eye. Any change takes at least two seconds; nothing moves faster than a leaf in a draft.
-2. **Never asks.** No notifications, sounds, badges or prompts. Clicks pass through. The only interaction is a hover-and-hold that shows a tiny tray menu.
+2. **Never asks.** No notifications, sounds, badges or prompts. Clicks pass through everywhere but the things themselves. The only interactions are yours to begin: carrying a thing along the sill, and a hover-and-hold on the candle that shows a tiny tray menu.
 3. **True to the world.** The light is the real sun's angle, the weather is the real weather, and the moon is in the real phase. If it can't know something, it shows plain daylight rather than inventing it.
 4. **Steps aside.** It hides itself during fullscreen apps, games and presentations, and when the taskbar auto-hides.
 5. **Light on the machine.** It aims for under 1% CPU and about 15 fps when there's no music, and 30 fps with music. It sleeps completely when the screen is locked.
@@ -69,7 +71,7 @@ v1 ends at M4. After that, everything is optional and can ship one at a time.
 2. **M2 · The light.** The sun's position from latitude, longitude and the clock drives the beam's angle, colour and shadows, and the candle lights at sunset. Done when a sped-up day (`--day-in 60s`) looks right from dawn to night.
 3. **M3 · The music.** Seoul's capture and analysis feed the dust motes, the plant's lean and the jar's ring. Done when a song plays in the browser and the sill responds within 50 ms with nothing that flickers.
 4. **M4 · Stepping aside.** It hides during fullscreen, auto-hide and screen lock, adds a tray menu, and starts at login. Done when a week of daily use brings no reason to close it. **Ship v1 here.**
-5. **M5 · Weather.** Open-Meteo every 30 minutes (free, no key): rain on the glass, snow on the ledge, grey light.
+5. **M5 · Weather.** Open-Meteo every 30 minutes (free, no key): rain on the glass, snow along the taskbar's edge, grey light.
 6. **M6 · The plant remembers.** One leaf per day of use, a flower after about 30, and a little wilt after time away. Saved as a small TOML file.
 7. **Later.** Swappable sill objects as presets in Seoul's style (TOML + WGSL), Soba link sync, macOS above the Dock, and a short loop filmed for chaps.dev.
 
@@ -78,7 +80,7 @@ v1 ends at M4. After that, everything is optional and can ship one at a time.
 | Risk | Why it matters | Fallback |
 | --- | --- | --- |
 | Per-pixel transparency with wgpu on Windows | Depends on the backend and the compositor; DX12 may give an opaque swapchain | Render offscreen and present via `UpdateLayeredWindow` (CPU copy, fine at 15 fps), or try Vulkan's premultiplied alpha mode |
-| Click-through vs. the hover menu | `WS_EX_TRANSPARENT` drops all mouse input, including hover | Poll the cursor position from a timer and turn click-through off only while the cursor holds still over the candle |
+| Click-through vs. the hover menu | `WS_EX_TRANSPARENT` drops all mouse input, including hover | Poll the cursor position from a timer, and turn click-through off only while the cursor is over one of the things, so it can be picked up; back on the moment it leaves |
 | Taskbar edge cases | Taskbar on the side or top, auto-hide, several monitors, Windows 11 centred icons | v1 supports only a bottom taskbar on the primary monitor and hides itself in every other case |
 | Battery and GPU cost | A desktop toy that drains a laptop gets uninstalled | Frame cap, a full stop on lock, and a perf check in CI the way Soba has one |
 | Loopback privacy | It listens to everything the PC plays | Analysis stays in memory only; nothing is recorded or sent. Say so on the About page |

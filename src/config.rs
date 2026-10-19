@@ -5,7 +5,7 @@
 //! last good config kept, so the sill never goes dark over a typo.
 //!
 //! The sill's shader is watched the same way while its source is on disk (on a
-//! machine that built it), so the ledge can be retuned while it runs.
+//! machine that built it), so the sill can be retuned while it runs.
 
 use std::path::{Path, PathBuf};
 
@@ -45,9 +45,9 @@ pub struct Config {
     pub fps_idle: u32,
     /// Frames per second while music plays (from M3).
     pub fps_music: u32,
-    /// The ledge's colours, as `"#rrggbb"` in the file.
+    /// The jar lid's colours, as `"#rrggbb"` in the file.
     pub palette: Palette,
-    /// The three things on the ledge: where each stands and its colours.
+    /// The three things on the sill: where each stands until it is moved, and its colours.
     pub plant: Plant,
     pub jar: Jar,
     pub candle: Candle,
@@ -152,12 +152,6 @@ impl Config {
                     sill::QUICKEST
                 );
             }
-        }
-        if !(0.0..=1.0).contains(&self.palette.glow_alpha) {
-            bail!(
-                "palette.glow_alpha {} is not between 0 and 1",
-                self.palette.glow_alpha
-            );
         }
         for (name, at) in [
             ("plant", self.plant.at),
@@ -309,8 +303,7 @@ mod tests {
                 .all(|(a, b)| (a - b).abs() <= 1.0 / 255.0)
         };
         let (e, d) = (example.palette, Palette::default());
-        assert!(near(e.wood, d.wood) && near(e.wood_shade, d.wood_shade));
-        assert!(near(e.lip, d.lip) && near(e.grain, d.grain) && near(e.glow, d.glow));
+        assert!(near(e.wood, d.wood) && near(e.lip, d.lip));
         let (plant, jar, candle) = (Plant::default(), Jar::default(), Candle::default());
         assert_eq!(example.plant.at, plant.at);
         assert!(near(example.plant.pot, plant.pot) && near(example.plant.leaf, plant.leaf));
@@ -318,7 +311,6 @@ mod tests {
         assert!(near(example.jar.glass, jar.glass) && near(example.jar.water, jar.water));
         assert_eq!(example.candle.at, candle.at);
         assert!(near(example.candle.wax, candle.wax) && near(example.candle.flame, candle.flame));
-        assert_eq!(e.glow_alpha, d.glow_alpha);
         assert_eq!((example.fps_idle, example.fps_music), (15, 30));
         assert_eq!(example.ease, Ease::default());
         let (e, d) = (&example.sky.0, &Sky::default().0);

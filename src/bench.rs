@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::bail;
 
 use crate::audio::analysis::Analyzer;
+use crate::carry::Pose;
 use crate::config::Config;
 use crate::glass::{self, Painter};
 use crate::pace::Pace;
@@ -131,6 +132,10 @@ fn measure(
     let dt = 1.0 / fps as f32;
     let per_frame = (SAMPLE_RATE / fps) as usize;
     let look = config.look();
+    let pose = Pose::resting(
+        [look.plant.at, look.jar.at, look.candle.at],
+        size[0] as f32 / SCALE as f32,
+    );
     // From early morning, so the run crosses the moving light of sunrise.
     let start = SystemTime::UNIX_EPOCH + Duration::from_secs(20_000 * 86_400 + 5 * 3600);
     let mut sill = Sill::at(sunlight(config, Some(PLACE), SillState::default(), start));
@@ -177,6 +182,7 @@ fn measure(
             &sill.shown(),
             night::flicker(seconds),
             [drift.at(), sway.lean(), ring.light()],
+            &pose,
         );
         // One frame in flight, as the swapchain allows.
         painter.wait();
