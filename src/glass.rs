@@ -124,7 +124,7 @@ struct Uniforms {
     /// Which thing is in front, and how fast the music swings the leaves.
     order: [f32; 4],
     /// How the cat lies or stands: see [`crate::cat::Cat::shape`].
-    cat: [[f32; 4]; 3],
+    cat: [[f32; 4]; 4],
     pot: [f32; 4],
     leaf: [f32; 4],
     glass: [f32; 4],
@@ -242,7 +242,7 @@ impl Glass {
         flicker: [f32; 2],
         music: [f32; 4],
         pose: &Pose,
-        cat: [[f32; 4]; 3],
+        cat: [[f32; 4]; 4],
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -378,7 +378,7 @@ impl Painter {
         flicker: [f32; 2],
         music: [f32; 4],
         pose: &Pose,
-        cat: [[f32; 4]; 3],
+        cat: [[f32; 4]; 4],
     ) {
         let palette = &look.palette;
         let scale = scale as f32;

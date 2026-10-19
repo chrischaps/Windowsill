@@ -73,6 +73,13 @@ const PUT: f32 = 3.0 * 60.0 * 60.0;
 const SUNNY: f32 = 0.3;
 const SIDEWAYS: f32 = 0.25;
 
+/// How it turns round: about a vertical axis, toward the room, its head
+/// leading on a spring of HEAD radians a second and its body following the
+/// head on one of BODY. Both are critically damped, so it starts the turn
+/// gently and finishes it without swinging back.
+const HEAD: f32 = 3.4;
+const BODY: f32 = 2.8;
+
 /// How long one breath takes asleep, and petted.
 const BREATH: f32 = 4.2;
 const BREATH_PETTED: f32 = 5.6;
@@ -198,8 +205,13 @@ pub struct Cat {
     walked: f32,
     speed: f32,
     gathering: f32,
-    /// Which way it faces, -1 left to 1 right, easing toward `face`.
-    facing: f32,
+    /// Which way it is turned, in radians from 0 facing right to pi facing
+    /// left, its head and its body, how fast each is turning, and which way
+    /// it means to face, -1 left or 1 right.
+    head: f32,
+    head_speed: f32,
+    body: f32,
+    body_speed: f32,
     face: f32,
     /// How far through a breath, in radians, and how deep they are.
     breath: f32,
@@ -245,7 +257,10 @@ impl Default for Cat {
             walked: 0.0,
             speed: 0.0,
             gathering: 0.0,
-            facing: 1.0,
+            head: 0.0,
+            head_speed: 0.0,
+            body: 0.0,
+            body_speed: 0.0,
             face: 1.0,
             breath: 0.0,
             depth: 1.0,
@@ -341,7 +356,10 @@ impl Cat {
                 tail: 0.0,
                 ear: 0.0,
                 ear_speed: 0.0,
-                facing: self.face,
+                head: facing(self.face),
+                head_speed: 0.0,
+                body: facing(self.face),
+                body_speed: 0.0,
                 ..*self
             };
             return;
@@ -401,7 +419,7 @@ impl Cat {
 
         // It turns round only once it is up on its feet.
         if self.up() > 0.6 {
-            self.facing = toward(self.facing, self.face, 0.45, dt);
+            self.turn(dt);
         }
 
         let awake = self.doing != Doing::Asleep || feel.held;
@@ -457,6 +475,24 @@ impl Cat {
             self.ear_speed += (-w * w * self.ear - 2.0 * EAR_DAMPING * w * self.ear_speed) * h;
             self.ear += self.ear_speed * h;
         }
+    }
+
+    /// Turns its head toward the way it means to face, and its body after
+    /// its head.
+    fn turn(&mut self, dt: f32) {
+        let to = facing(self.face);
+        let steps = (dt / STEP).ceil().max(1.0);
+        let h = dt / steps;
+        for _ in 0..steps as u32 {
+            self.head_speed += (HEAD * HEAD * (to - self.head) - 2.0 * HEAD * self.head_speed) * h;
+            self.head += self.head_speed * h;
+            self.body_speed +=
+                (BODY * BODY * (self.head - self.body) - 2.0 * BODY * self.body_speed) * h;
+            self.body += self.body_speed * h;
+        }
+        // Never further round than facing straight one way or the other.
+        self.head = self.head.clamp(0.0, PI);
+        self.body = self.body.clamp(0.0, PI);
     }
 
     /// How far up it is on the whole, from 0 curled to 1 standing.
@@ -556,10 +592,11 @@ impl Cat {
 
     /// How it is lying or standing, for the shader: how far up its front is,
     /// how far into a stretch, how far through a stride and how its breath
-    /// swells; its tail and ear in degrees, how open its eyes are and which
-    /// way it faces; how petted and how held it is, how hard it is striding,
-    /// and how far up its hindquarters are.
-    pub fn shape(&self) -> [[f32; 4]; 3] {
+    /// swells; its tail and ear in degrees, how open its eyes are and how far
+    /// its body is turned (the cosine: 1 facing right, -1 left); how petted
+    /// and how held it is, how hard it is striding, and how far up its
+    /// hindquarters are; and how far its head is turned, the same way.
+    pub fn shape(&self) -> [[f32; 4]; 4] {
         // Asleep, the tail tip drifts a little on its own, slowly.
         let drift = (1.0 - self.up())
             * (3.0 * (self.asleep * 0.55).sin() + 2.0 * (self.asleep * 0.23).sin());
@@ -568,10 +605,17 @@ impl Cat {
         let breath = (self.breath + 0.35 * self.breath.sin()).sin() * self.depth;
         [
             [self.front, self.stretch, self.stride, breath],
-            [tail, self.ear, self.eyes, self.facing],
+            [tail, self.ear, self.eyes, self.body.cos()],
             [self.pet, self.held, self.speed / PACE, self.rear],
+            [self.head.cos(), 0.0, 0.0, 0.0],
         ]
     }
+}
+
+/// How far round it is turned to face `face`, -1 left or 1 right: 0 for
+/// right, pi for left.
+fn facing(face: f32) -> f32 {
+    if face >= 0.0 { 0.0 } else { PI }
 }
 
 /// A walk from `from` to `to`, or straight to lying down if there's no way to go.
@@ -884,7 +928,7 @@ mod tests {
                 },
             );
         }
-        let [a, b, c] = cat.shape();
+        let [a, b, c, _] = cat.shape();
         assert!(c[0] > 0.9, "{c:?}");
         assert!(b[2] <= 0.36, "only to slits: {b:?}");
         assert!(a[3].abs() <= 1.7);
@@ -914,7 +958,7 @@ mod tests {
             if cat.since_ear < before {
                 flicks += 1;
             }
-            let [_, b, _] = cat.shape();
+            let [_, b, _, _] = cat.shape();
             most[0] = most[0].max(b[0].abs());
             most[1] = most[1].max(b[1].abs());
         }
@@ -975,6 +1019,28 @@ mod tests {
             assert!((pair[1] - pair[0]).abs() < PACE * 0.12, "{pair:?}");
         }
         assert!((x - (start + 120.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn it_turns_round_head_first_smoothly_and_no_further_than_round() {
+        let mut cat = Cat::default();
+        let mut x = spots()[CAT];
+        // Woken with room only to the left, so it has to turn round.
+        let mut hemmed = spots();
+        hemmed[CANDLE] = x + FOOT[CANDLE] + FOOT[CAT] + GAP + 1.0;
+        cat.wake(x, hemmed, WIDTH, Light::default());
+        let (mut led, mut fastest) = (false, 0.0f32);
+        for _ in 0..30 * 8 {
+            let was = cat.body;
+            run(&mut cat, &mut x, 30.0, 1.0 / 30.0);
+            led |= cat.head > cat.body + 0.1;
+            fastest = fastest.max((cat.body - was).abs() * 30.0);
+            assert!((0.0..=PI).contains(&cat.body) && (0.0..=PI).contains(&cat.head));
+        }
+        assert!(led, "its head never led");
+        assert!(fastest < 3.0, "turned at {fastest} radians a second");
+        assert!((cat.body - PI).abs() < 0.02, "{}", cat.body);
+        assert!(cat.shape()[1][3] < -0.99);
     }
 
     #[test]
