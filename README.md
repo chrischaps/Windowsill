@@ -4,6 +4,8 @@ A thin, living strip that rests on top of the Windows taskbar. It looks like a w
 
 It asks for nothing. There are no notifications, no window to manage, and every click passes through. You glance at it the way you glance at a real window, and it tells you the time of day without a number.
 
+**Project page:** [chaps.dev/projects/windowsill](https://chaps.dev/projects/windowsill/) has clips of the sill answering music, a tap waking the cat, and a sunset at an hour a minute.
+
 **Status:** pre-v1. The work is tracked in [milestones](https://github.com/chrischaps/Windowsill/milestones) M1–M4. The full design is in [docs/proposal.md](docs/proposal.md).
 
 ## Build
